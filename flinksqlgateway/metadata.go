@@ -9,22 +9,25 @@ import (
 	"strings"
 )
 
-// Identifier identifies a Flink catalog object. Empty Catalog/Database means
-// the current session scope, but a Catalog cannot be supplied without a
-// Database when an object is addressed.
+// Identifier는 Flink catalog 객체를 식별한다. 빈 Catalog나 Database는 현재 session 범위를
+// 뜻하며 객체를 지정할 때 Catalog만 단독으로 제공할 수는 없다.
 type Identifier struct {
 	Catalog  string
 	Database string
 	Object   string
 }
 
+// TableKind는 metadata 목록에 포함된 객체가 table인지 view인지 구분한다.
 type TableKind string
 
 const (
+	// TableKindTable은 실제 또는 temporary table을 나타낸다.
 	TableKindTable TableKind = "TABLE"
-	TableKindView  TableKind = "VIEW"
+	// TableKindView는 view를 나타낸다.
+	TableKindView TableKind = "VIEW"
 )
 
+// TableMetadata는 조회 범위와 table 또는 view 이름을 보존한다.
 type TableMetadata struct {
 	Catalog  string
 	Database string
@@ -32,6 +35,7 @@ type TableMetadata struct {
 	Kind     TableKind
 }
 
+// ColumnMetadata는 DESCRIBE 결과에서 얻은 column 정의를 보존한다.
 type ColumnMetadata struct {
 	Name      string
 	DataType  string
@@ -42,8 +46,8 @@ type ColumnMetadata struct {
 	Comment   string
 }
 
-// QuoteIdentifier applies Flink/Calcite backtick quoting and doubles embedded
-// backticks. It never treats identifier text as SQL syntax.
+// QuoteIdentifier는 Flink/Calcite backtick quoting을 적용하고 내부 backtick을 두 번 쓴다.
+// 식별자 문자열을 SQL 구문으로 취급하지 않는다.
 func QuoteIdentifier(identifier string) (string, error) {
 	if strings.TrimSpace(identifier) == "" {
 		return "", fmt.Errorf("flinksqlgateway: identifier is required")
@@ -51,10 +55,12 @@ func QuoteIdentifier(identifier string) (string, error) {
 	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`", nil
 }
 
+// ListCatalogs는 현재 session에서 사용할 수 있는 catalog 이름을 조회한다.
 func (c *GatewayClient) ListCatalogs(ctx context.Context, sessionHandle string) ([]string, error) {
 	return c.listMetadataNames(ctx, sessionHandle, "SHOW CATALOGS")
 }
 
+// ListDatabases는 현재 또는 지정한 catalog에서 database 이름을 조회한다.
 func (c *GatewayClient) ListDatabases(ctx context.Context, sessionHandle, catalog string) ([]string, error) {
 	statement := "SHOW DATABASES"
 	if catalog != "" {
@@ -67,18 +73,22 @@ func (c *GatewayClient) ListDatabases(ctx context.Context, sessionHandle, catalo
 	return c.listMetadataNames(ctx, sessionHandle, statement)
 }
 
+// ListTables는 현재 또는 지정한 catalog와 database 범위의 table을 조회한다.
 func (c *GatewayClient) ListTables(ctx context.Context, sessionHandle string, identifier Identifier) ([]TableMetadata, error) {
 	return c.listTablesOrViews(ctx, sessionHandle, "SHOW TABLES", TableKindTable, identifier)
 }
 
+// ListViews는 현재 또는 지정한 catalog와 database 범위의 view를 조회한다.
 func (c *GatewayClient) ListViews(ctx context.Context, sessionHandle string, identifier Identifier) ([]TableMetadata, error) {
 	return c.listTablesOrViews(ctx, sessionHandle, "SHOW VIEWS", TableKindView, identifier)
 }
 
+// ListFunctions는 현재 session에서 사용할 수 있는 function 이름을 조회한다.
 func (c *GatewayClient) ListFunctions(ctx context.Context, sessionHandle string) ([]string, error) {
 	return c.listMetadataNames(ctx, sessionHandle, "SHOW FUNCTIONS")
 }
 
+// DescribeTable은 완전한 quoting을 적용한 객체의 DESCRIBE column metadata를 반환한다.
 func (c *GatewayClient) DescribeTable(ctx context.Context, sessionHandle string, identifier Identifier) ([]ColumnMetadata, error) {
 	qualified, err := qualifiedObject(identifier)
 	if err != nil {
@@ -122,8 +132,7 @@ func (c *GatewayClient) DescribeTable(ctx context.Context, sessionHandle string,
 	return columns, nil
 }
 
-// Explain executes EXPLAIN PLAN FOR in the current session and joins the first
-// field from each returned row with newlines.
+// Explain은 현재 session에서 EXPLAIN PLAN FOR를 실행하고 각 결과 row의 첫 field를 줄바꿈으로 합친다.
 func (c *GatewayClient) Explain(ctx context.Context, sessionHandle, statement string) (string, error) {
 	if strings.TrimSpace(statement) == "" {
 		return "", fmt.Errorf("flinksqlgateway: statement is required")
@@ -143,6 +152,7 @@ func (c *GatewayClient) Explain(ctx context.Context, sessionHandle, statement st
 	return strings.Join(lines, "\n"), nil
 }
 
+// listMetadataNames는 SHOW 계열 결과의 첫 field를 이름 목록으로 변환한다.
 func (c *GatewayClient) listMetadataNames(ctx context.Context, sessionHandle, statement string) ([]string, error) {
 	result, err := c.ExecuteAndWait(ctx, sessionHandle, statement, ExecuteOptions{})
 	if err != nil {
@@ -159,6 +169,7 @@ func (c *GatewayClient) listMetadataNames(ctx context.Context, sessionHandle, st
 	return names, nil
 }
 
+// listTablesOrViews는 안전하게 quoting한 범위에서 table 또는 view metadata를 구성한다.
 func (c *GatewayClient) listTablesOrViews(ctx context.Context, sessionHandle, command string, kind TableKind, identifier Identifier) ([]TableMetadata, error) {
 	if identifier.Object != "" {
 		return nil, fmt.Errorf("flinksqlgateway: list scope must not include an object name")
@@ -185,6 +196,7 @@ func (c *GatewayClient) listTablesOrViews(ctx context.Context, sessionHandle, co
 	return result, nil
 }
 
+// qualifiedObject는 catalog, database와 object를 각각 quoting해 완전한 객체 이름을 만든다.
 func qualifiedObject(identifier Identifier) (string, error) {
 	if identifier.Object == "" {
 		return "", fmt.Errorf("flinksqlgateway: object identifier is required")
@@ -206,6 +218,7 @@ func qualifiedObject(identifier Identifier) (string, error) {
 	return strings.Join(parts, "."), nil
 }
 
+// qualifiedScope는 현재 catalog 또는 명시된 catalog의 database 범위를 안전하게 quoting한다.
 func qualifiedScope(catalog, database string) (string, error) {
 	parts := make([]string, 0, 2)
 	for _, value := range []string{catalog, database} {
@@ -224,6 +237,7 @@ func qualifiedScope(catalog, database string) (string, error) {
 	return strings.Join(parts, "."), nil
 }
 
+// rowFieldText는 metadata 결과 field를 문자열로 읽고 SQL NULL은 빈 문자열로 반환한다.
 func rowFieldText(row Row, index int) (string, error) {
 	if index < 0 || index >= len(row.Fields) {
 		return "", fmt.Errorf("flinksqlgateway: metadata row field %d is missing", index)

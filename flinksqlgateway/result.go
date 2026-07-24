@@ -7,12 +7,14 @@ import (
 	"time"
 )
 
+// executionLimits는 한 실행에 적용할 row 형식과 메모리 및 polling 상한을 정규화해 보관한다.
 type executionLimits struct {
 	rowFormat RowFormat
 	maxRows   int
 	maxPolls  int
 }
 
+// consumeResults는 server paging URI를 검증하며 EOS까지 결과를 수집하거나 event로 전달한다.
 func (c *GatewayClient) consumeResults(
 	ctx context.Context,
 	operation *Operation,
@@ -122,6 +124,7 @@ func (c *GatewayClient) consumeResults(
 	}
 }
 
+// pageWithoutRows는 stream page event가 row 전체를 중복 보관하지 않도록 metadata만 복사한다.
 func pageWithoutRows(page *ResultPage) *ResultPage {
 	if page == nil {
 		return nil
@@ -136,6 +139,7 @@ func pageWithoutRows(page *ResultPage) *ResultPage {
 	return &copyPage
 }
 
+// nextPollInterval은 overflow와 설정 상한을 지키며 polling 간격을 두 배로 늘린다.
 func nextPollInterval(current, maximum time.Duration) time.Duration {
 	next := current * 2
 	if next < current || next > maximum {

@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+// validateNextResultURI는 paging URI가 인증정보 없이 최초 Gateway와 같은 scheme 및 host를
+// 유지하는지 검증해 SSRF와 header 유출을 방지한다.
 func (c *GatewayClient) validateNextResultURI(value string) (*url.URL, error) {
 	ref, err := url.Parse(value)
 	if err != nil {
@@ -27,8 +29,7 @@ func (c *GatewayClient) validateNextResultURI(value string) (*url.URL, error) {
 	return resolved, nil
 }
 
-// MaskHandle returns a correlation-safe representation without exposing a
-// complete session or operation handle.
+// MaskHandle은 전체 session 또는 operation handle을 노출하지 않는 관측용 표현을 반환한다.
 func MaskHandle(handle string) string {
 	if len(handle) <= 8 {
 		return "********"

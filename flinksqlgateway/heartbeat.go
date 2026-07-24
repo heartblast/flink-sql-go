@@ -8,16 +8,15 @@ import (
 	"time"
 )
 
-// HeartbeatEvent reports the latest heartbeat result. ConsecutiveFailures is
-// reset to zero by a successful heartbeat.
+// HeartbeatEvent는 최근 heartbeat 결과를 보고하며 성공하면 ConsecutiveFailures가 0으로 초기화된다.
 type HeartbeatEvent struct {
 	Timestamp           time.Time
 	Error               error
 	ConsecutiveFailures int
 }
 
-// HeartbeatRunner owns one session heartbeat goroutine. Errors is bounded and
-// closes when the runner stops.
+// HeartbeatRunner는 한 session의 heartbeat goroutine을 소유한다. Errors channel은
+// 크기가 제한되며 runner가 멈추면 닫힌다.
 type HeartbeatRunner struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
@@ -28,14 +27,14 @@ type HeartbeatRunner struct {
 	jitter   time.Duration
 }
 
-// Errors reports heartbeat failures without blocking the heartbeat loop.
+// Errors는 heartbeat loop를 막지 않고 실패를 보고하는 bounded channel이다.
 func (h *HeartbeatRunner) Errors() <-chan error { return h.errors }
 
-// Events reports success and failure state for managed-session health. The
-// bounded channel retains the latest event and never blocks heartbeats.
+// Events는 managed session 건강 상태에 사용할 성공과 실패 event를 보고한다. bounded
+// channel은 최근 event를 유지하며 heartbeat를 막지 않는다.
 func (h *HeartbeatRunner) Events() <-chan HeartbeatEvent { return h.events }
 
-// Stop cancels the runner and waits for its goroutine to exit.
+// Stop은 runner를 취소하고 heartbeat goroutine이 끝날 때까지 기다린다.
 func (h *HeartbeatRunner) Stop() {
 	if h == nil {
 		return
@@ -44,12 +43,12 @@ func (h *HeartbeatRunner) Stop() {
 	<-h.done
 }
 
-// StartHeartbeat starts at most one runner per session handle. A duplicate
-// call returns the existing runner.
+// StartHeartbeat는 session handle마다 runner를 최대 하나만 시작하며 중복 호출은 기존 runner를 반환한다.
 func (c *GatewayClient) StartHeartbeat(ctx context.Context, sessionHandle string) (*HeartbeatRunner, error) {
 	return c.startHeartbeat(ctx, sessionHandle, c.cfg.HeartbeatInterval, 0)
 }
 
+// startHeartbeat는 주기와 jitter를 검증하고 session별 단일 runner를 등록한다.
 func (c *GatewayClient) startHeartbeat(ctx context.Context, sessionHandle string, interval, jitter time.Duration) (*HeartbeatRunner, error) {
 	if sessionHandle == "" {
 		return nil, fmt.Errorf("flinksqlgateway: session handle is required")
@@ -88,6 +87,7 @@ func (c *GatewayClient) startHeartbeat(ctx context.Context, sessionHandle string
 	return runner, nil
 }
 
+// runHeartbeat는 취소되거나 session이 만료될 때까지 heartbeat를 전송하고 최신 상태를 게시한다.
 func (c *GatewayClient) runHeartbeat(ctx context.Context, sessionHandle string, runner *HeartbeatRunner) {
 	defer func() {
 		c.stateMu.Lock()
@@ -126,6 +126,7 @@ func (c *GatewayClient) runHeartbeat(ctx context.Context, sessionHandle string, 
 	}
 }
 
+// heartbeatDelay는 interval의 절반을 넘지 않는 범위에서 양방향 jitter를 적용한다.
 func heartbeatDelay(interval, jitter time.Duration) time.Duration {
 	if jitter <= 0 {
 		return interval
@@ -142,6 +143,7 @@ func heartbeatDelay(interval, jitter time.Duration) time.Duration {
 	return delay
 }
 
+// publishHeartbeatEvent는 느린 소비자가 heartbeat를 막지 않도록 기존 event를 최신 값으로 교체한다.
 func publishHeartbeatEvent(channel chan HeartbeatEvent, event HeartbeatEvent) {
 	select {
 	case channel <- event:
@@ -158,7 +160,7 @@ func publishHeartbeatEvent(channel chan HeartbeatEvent, event HeartbeatEvent) {
 	}
 }
 
-// StopHeartbeat stops a runner if one exists. It is idempotent.
+// StopHeartbeat는 session의 runner가 있으면 중지하며 중복 호출에 안전하다.
 func (c *GatewayClient) StopHeartbeat(sessionHandle string) {
 	c.stateMu.Lock()
 	runner := c.heartbeats[sessionHandle]

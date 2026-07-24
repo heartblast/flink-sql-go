@@ -6,17 +6,21 @@ import (
 	"time"
 )
 
+// internalCleanupContextKey는 client 종료 후에도 이미 소유한 자원을 정리하도록 허용하는 내부 context key이다.
 type internalCleanupContextKey struct{}
 
+// withInternalCleanup은 새 사용자 작업이 아닌 내부 cleanup 요청임을 context에 표시한다.
 func withInternalCleanup(ctx context.Context) context.Context {
 	return context.WithValue(ctx, internalCleanupContextKey{}, true)
 }
 
+// isInternalCleanup은 종료된 client에서도 허용할 내부 cleanup 요청인지 확인한다.
 func isInternalCleanup(ctx context.Context) bool {
 	allowed, _ := ctx.Value(internalCleanupContextKey{}).(bool)
 	return allowed
 }
 
+// ensureOpen은 새 작업을 거부하되 client가 시작한 내부 cleanup은 계속 허용한다.
 func (c *GatewayClient) ensureOpen(ctx context.Context) error {
 	if isInternalCleanup(ctx) {
 		return nil
@@ -30,8 +34,8 @@ func (c *GatewayClient) ensureOpen(ctx context.Context) error {
 	return nil
 }
 
-// Close stops client-owned lifecycle work, rejects new requests, and closes
-// idle connections only when the transport is owned by this client.
+// Close는 client가 소유한 수명주기 작업을 중단하고 새 요청을 거부한다. idle connection은
+// client가 transport를 소유한 경우에만 닫는다.
 func (c *GatewayClient) Close() error {
 	if c == nil {
 		return nil
@@ -88,6 +92,7 @@ func (c *GatewayClient) Close() error {
 	return c.clientCloseErr
 }
 
+// registerManaged는 client 종료와 경쟁하지 않도록 managed session을 원자적으로 등록한다.
 func (c *GatewayClient) registerManaged(session *managedSession) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
@@ -98,12 +103,14 @@ func (c *GatewayClient) registerManaged(session *managedSession) error {
 	return nil
 }
 
+// unregisterManaged는 종료된 managed session을 client 소유 목록에서 제거한다.
 func (c *GatewayClient) unregisterManaged(session *managedSession) {
 	c.stateMu.Lock()
 	delete(c.managed, session)
 	c.stateMu.Unlock()
 }
 
+// registerStream은 client 종료와 경쟁하지 않도록 result stream을 원자적으로 등록한다.
 func (c *GatewayClient) registerStream(stream *resultStream) error {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
@@ -114,12 +121,14 @@ func (c *GatewayClient) registerStream(stream *resultStream) error {
 	return nil
 }
 
+// unregisterStream은 종료된 result stream을 client 소유 목록에서 제거한다.
 func (c *GatewayClient) unregisterStream(stream *resultStream) {
 	c.stateMu.Lock()
 	delete(c.streams, stream)
 	c.stateMu.Unlock()
 }
 
+// observeLifecycle은 Observer panic이 client 동작을 중단하지 않게 격리해 정제된 event를 전달한다.
 func (c *GatewayClient) observeLifecycle(ctx context.Context, observation Observation) {
 	observer := c.cfg.LifecycleObserver
 	if observer == nil {

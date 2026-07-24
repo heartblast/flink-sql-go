@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// ExecuteStream submits a statement and returns a synchronous, incremental
-// iterator. Unlike StreamResults it does not create a producer goroutine.
+// ExecuteStream은 statement를 제출하고 동기식 점진 iterator를 반환한다. StreamResults와
+// 달리 producer goroutine을 생성하지 않는다.
 func (c *GatewayClient) ExecuteStream(ctx context.Context, sessionHandle, statement string, options StreamOptions) (ResultStream, error) {
 	settings, err := c.executionSettings(options.ExecuteOptions)
 	if err != nil {
@@ -60,6 +60,7 @@ func (c *GatewayClient) ExecuteStream(ctx context.Context, sessionHandle, statem
 	return stream, nil
 }
 
+// resultStream은 동기 Next 호출 사이의 paging, 제한과 operation cleanup 상태를 소유한다.
 type resultStream struct {
 	client    *GatewayClient
 	ctx       context.Context
@@ -87,8 +88,10 @@ type resultStream struct {
 	pendingPage  *ResultPage
 }
 
+// 컴파일 시 resultStream이 공개 ResultStream 계약을 모두 구현하는지 확인한다.
 var _ ResultStream = (*resultStream)(nil)
 
+// Next는 다음 row를 준비하며 EOS, 오류 또는 제한에 도달하면 false를 반환하고 자원을 정리한다.
 func (s *resultStream) Next() bool {
 	s.nextMu.Lock()
 	defer s.nextMu.Unlock()
@@ -181,6 +184,7 @@ func (s *resultStream) Next() bool {
 	}
 }
 
+// fetchNextPage는 첫 token 또는 검증을 마친 server paging URL에서 다음 page를 가져온다.
 func (s *resultStream) fetchNextPage() (*ResultPage, error) {
 	if s.nextURL == nil {
 		return s.client.FetchResults(s.ctx, s.operation.SessionHandle, s.operation.Handle, 0, s.limits.rowFormat)
@@ -188,6 +192,7 @@ func (s *resultStream) fetchNextPage() (*ResultPage, error) {
 	return s.client.fetchResultsURL(s.ctx, s.nextURL)
 }
 
+// setNextURL은 page의 nextResultUri를 검증하고 필요할 때 누락을 protocol 오류로 처리한다.
 func (s *resultStream) setNextURL(page *ResultPage, required bool) error {
 	value := nextURLString(page)
 	if value == "" {
@@ -205,38 +210,43 @@ func (s *resultStream) setNextURL(page *ResultPage, required bool) error {
 	return nil
 }
 
+// Event는 최근 operation, row 또는 EOS event의 복사본을 반환한다.
 func (s *resultStream) Event() ResultEvent {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.currentEvent
 }
 
+// Row는 최근 Next가 준비한 changelog row의 복사본을 반환한다.
 func (s *resultStream) Row() Row {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.currentRow
 }
 
+// Err는 iteration을 끝낸 주 오류와 보존된 cleanup 오류를 반환한다.
 func (s *resultStream) Err() error {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.streamErr
 }
 
+// JobID는 결과 page에서 마지막으로 확인한 Flink Job ID를 반환한다.
 func (s *resultStream) JobID() string {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.jobID
 }
 
-// Close stops iteration. Before EOS it explicitly cancels and closes the
-// operation; after EOS it is a no-op. It is safe to call repeatedly.
+// Close는 iteration을 중지한다. EOS 전에는 operation을 명시적으로 취소하고 닫으며 EOS
+// 후에는 추가 작업을 하지 않는다. 중복 호출에 안전하다.
 func (s *resultStream) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), s.client.cfg.RequestTimeout)
 	defer cancel()
 	return s.closeWithContext(ctx, nil)
 }
 
+// closeWithContext는 client 종료와 사용자 Close가 공유하는 제한 시간 내 cleanup을 수행한다.
 func (s *resultStream) closeWithContext(ctx context.Context, terminalErr error) error {
 	s.cancel()
 	s.finish(ctx, terminalErr, true)
@@ -246,6 +256,7 @@ func (s *resultStream) closeWithContext(ctx context.Context, terminalErr error) 
 	return s.cleanupErr
 }
 
+// finishFromNext는 Next 내부 종료 원인을 보존하면서 독립된 cleanup context로 정리한다.
 func (s *resultStream) finishFromNext(primary error, forceCancel bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.client.cfg.RequestTimeout)
 	defer cancel()
@@ -253,6 +264,7 @@ func (s *resultStream) finishFromNext(primary error, forceCancel bool) {
 	<-s.cleanupDone
 }
 
+// finish는 cancel과 close를 최대 한 번 실행하고 주 오류와 cleanup 오류를 함께 저장한다.
 func (s *resultStream) finish(ctx context.Context, primary error, forceCancel bool) {
 	s.cleanupOnce.Do(func() {
 		defer close(s.cleanupDone)
@@ -296,6 +308,7 @@ func (s *resultStream) finish(ctx context.Context, primary error, forceCancel bo
 	})
 }
 
+// isClosed는 동시 호출에 안전하게 stream 종료 상태를 반환한다.
 func (s *resultStream) isClosed() bool {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()

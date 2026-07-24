@@ -10,34 +10,49 @@ import (
 	"time"
 )
 
-// Client exposes low-level REST operations and bounded high-level execution.
+// Client는 저수준 REST operation과 제한이 적용된 고수준 실행 API를 제공한다.
 type Client interface {
+	// GetInfo는 SQL Gateway 제품 metadata를 조회한다.
 	GetInfo(ctx context.Context) (*GatewayInfo, error)
+	// GetAPIVersions는 Gateway가 광고하는 REST API 버전을 조회한다.
 	GetAPIVersions(ctx context.Context) ([]string, error)
+	// CheckAPIVersion은 설정된 API 버전의 server 지원 여부를 검증한다.
 	CheckAPIVersion(ctx context.Context) error
+	// OpenSession은 상태를 보존하는 server-side session을 만든다.
 	OpenSession(ctx context.Context, req OpenSessionRequest) (*Session, error)
+	// GetSessionConfig는 현재 session property를 조회한다.
 	GetSessionConfig(ctx context.Context, sessionHandle string) (map[string]string, error)
+	// ConfigureSession은 v2 이상 session에 설정 statement를 적용한다.
 	ConfigureSession(ctx context.Context, sessionHandle, statement string, executionTimeout time.Duration) error
+	// CompleteStatement는 v2 이상에서 SQL 자동완성 후보를 조회한다.
 	CompleteStatement(ctx context.Context, sessionHandle, statement string, position int) ([]string, error)
+	// Heartbeat는 session 만료를 방지하는 heartbeat를 한 번 전송한다.
 	Heartbeat(ctx context.Context, sessionHandle string) error
+	// ExecuteStatement는 SQL을 제출하고 비동기 operation handle을 반환한다.
 	ExecuteStatement(ctx context.Context, sessionHandle string, req ExecuteStatementRequest) (*Operation, error)
+	// GetOperationStatus는 현재 operation 상태를 조회한다.
 	GetOperationStatus(ctx context.Context, sessionHandle, operationHandle string) (OperationStatus, error)
+	// FetchResults는 지정한 token의 결과 page를 조회한다.
 	FetchResults(ctx context.Context, sessionHandle, operationHandle string, token int64, rowFormat RowFormat) (*ResultPage, error)
+	// CancelOperation은 SQL operation 취소를 요청한다.
 	CancelOperation(ctx context.Context, sessionHandle, operationHandle string) error
+	// CloseOperation은 SQL operation 자원을 해제한다.
 	CloseOperation(ctx context.Context, sessionHandle, operationHandle string) error
+	// CloseSession은 heartbeat를 멈추고 server-side session을 닫는다.
 	CloseSession(ctx context.Context, sessionHandle string) error
 	StatementExecutor
 }
 
-// StatementExecutor provides bounded convenience APIs above Client's REST
-// operations.
+// StatementExecutor는 Client의 REST operation 위에 제한이 적용된 편의 실행 API를 제공한다.
 type StatementExecutor interface {
+	// ExecuteAndWait는 bounded 결과를 수집하고 operation을 정리한다.
 	ExecuteAndWait(ctx context.Context, sessionHandle, statement string, options ExecuteOptions) (*ExecutionResult, error)
+	// StreamResults는 bounded channel로 실행 수명주기와 row event를 전달한다.
 	StreamResults(ctx context.Context, sessionHandle, statement string, options StreamOptions) (<-chan ResultEvent, <-chan error)
 }
 
-// GatewayClient is safe for concurrent use. A Session's state-changing SQL
-// ordering remains the caller's responsibility.
+// GatewayClient는 여러 goroutine에서 안전하게 사용할 수 있다. Session 상태를 바꾸는
+// SQL의 실행 순서를 보장하는 책임은 호출자에게 있다.
 type GatewayClient struct {
 	cfg               Config
 	baseURL           *url.URL
@@ -63,10 +78,11 @@ type GatewayClient struct {
 	streams      map[*resultStream]struct{}
 }
 
+// 컴파일 시 GatewayClient가 공개 Client 계약을 모두 구현하는지 확인한다.
 var _ Client = (*GatewayClient)(nil)
 
-// NewClient validates configuration and creates a reusable client. It does
-// not perform network I/O; the first versioned call verifies APIVersion.
+// NewClient는 설정을 검증하고 재사용 가능한 client를 생성한다. 생성 중에는 네트워크를
+// 호출하지 않으며 첫 versioned 요청에서 APIVersion을 검증한다.
 func NewClient(cfg Config) (*GatewayClient, error) {
 	ownsHTTPTransport := cfg.HTTPClient == nil || cfg.OwnHTTPTransport
 	normalized, base, hc, err := cfg.normalize()
@@ -91,8 +107,8 @@ func NewClient(cfg Config) (*GatewayClient, error) {
 	}, nil
 }
 
-// CheckAPIVersion verifies that the configured version is advertised by the
-// gateway. Successful and unsupported results are cached.
+// CheckAPIVersion은 Gateway가 설정된 버전을 광고하는지 확인한다. 성공 결과와 미지원
+// 결과는 반복 요청을 피하도록 저장한다.
 func (c *GatewayClient) CheckAPIVersion(ctx context.Context) error {
 	c.versionMu.Lock()
 	defer c.versionMu.Unlock()
@@ -114,6 +130,7 @@ func (c *GatewayClient) CheckAPIVersion(ctx context.Context) error {
 	return c.versionErr
 }
 
+// sessionContext는 정책 검증에 전달할 session 정보를 복사해 내부 상태 변경을 차단한다.
 func (c *GatewayClient) sessionContext(handle string) SessionContext {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
@@ -125,6 +142,7 @@ func (c *GatewayClient) sessionContext(handle string) SessionContext {
 	return context
 }
 
+// cloneMap은 호출자와 내부 상태가 같은 map을 공유하지 않도록 문자열 map을 복사한다.
 func cloneMap(input map[string]string) map[string]string {
 	if input == nil {
 		return nil

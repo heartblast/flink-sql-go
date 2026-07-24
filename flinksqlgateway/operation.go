@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// ExecuteStatement submits SQL and returns an asynchronous operation handle.
-// The POST is intentionally never retried.
+// ExecuteStatement는 SQL을 제출하고 비동기 operation handle을 반환한다. 중복 실행 위험 때문에
+// POST를 의도적으로 자동 재시도하지 않는다.
 func (c *GatewayClient) ExecuteStatement(ctx context.Context, sessionHandle string, req ExecuteStatementRequest) (*Operation, error) {
 	if err := c.validateStatement(ctx, sessionHandle, req.Statement); err != nil {
 		return nil, err
@@ -90,7 +90,7 @@ func (c *GatewayClient) ExecuteStatement(ctx context.Context, sessionHandle stri
 	return operation, nil
 }
 
-// GetOperationStatus returns an open-ended Flink operation status.
+// GetOperationStatus는 이후 Flink 상태도 보존하는 열린 operation 상태값을 반환한다.
 func (c *GatewayClient) GetOperationStatus(ctx context.Context, sessionHandle, operationHandle string) (OperationStatus, error) {
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return "", err
@@ -105,8 +105,8 @@ func (c *GatewayClient) GetOperationStatus(ctx context.Context, sessionHandle, o
 	return response.Status, nil
 }
 
-// FetchResults fetches a result token. In Flink v1 the server always uses its
-// JSON default and does not accept rowFormat; PLAIN_TEXT therefore requires v2.
+// FetchResults는 지정한 결과 token을 가져온다. Flink v1은 server 기본 JSON만 사용하고
+// rowFormat을 받지 않으므로 PLAIN_TEXT는 v2 이상이 필요하다.
 func (c *GatewayClient) FetchResults(ctx context.Context, sessionHandle, operationHandle string, token int64, rowFormat RowFormat) (*ResultPage, error) {
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return nil, err
@@ -129,6 +129,7 @@ func (c *GatewayClient) FetchResults(ctx context.Context, sessionHandle, operati
 	return c.fetchResultsURL(ctx, target)
 }
 
+// fetchResultsURL은 검증을 마친 paging URL에서 결과와 실제 응답 byte 수를 함께 반환한다.
 func (c *GatewayClient) fetchResultsURL(ctx context.Context, target *url.URL) (*ResultPage, error) {
 	var page ResultPage
 	responseBytes, err := c.doJSON(ctx, http.MethodGet, target, nil, &page, true)
@@ -139,7 +140,7 @@ func (c *GatewayClient) fetchResultsURL(ctx context.Context, target *url.URL) (*
 	return &page, nil
 }
 
-// CancelOperation requests cancellation and never retries the POST.
+// CancelOperation은 operation 취소를 요청하며 POST를 자동 재시도하지 않는다.
 func (c *GatewayClient) CancelOperation(ctx context.Context, sessionHandle, operationHandle string) error {
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return err
@@ -149,8 +150,8 @@ func (c *GatewayClient) CancelOperation(ctx context.Context, sessionHandle, oper
 	return err
 }
 
-// CloseOperation releases operation resources and never retries the DELETE.
-// A not-found response is treated as an idempotent close.
+// CloseOperation은 operation 자원을 해제하며 DELETE를 자동 재시도하지 않는다.
+// not-found 응답은 멱등인 종료 성공으로 취급한다.
 func (c *GatewayClient) CloseOperation(ctx context.Context, sessionHandle, operationHandle string) error {
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return err
@@ -163,10 +164,12 @@ func (c *GatewayClient) CloseOperation(ctx context.Context, sessionHandle, opera
 	return err
 }
 
+// operationRoute는 session과 operation handle을 path segment로 escape해 공통 route를 만든다.
 func operationRoute(sessionHandle, operationHandle string) string {
 	return "/sessions/" + pathSegment(sessionHandle) + "/operations/" + pathSegment(operationHandle)
 }
 
+// operationFailure는 fetch 오류가 terminal operation 실패에서 비롯됐는지 추가로 분류한다.
 func (c *GatewayClient) operationFailure(ctx context.Context, sessionHandle, operationHandle string, fetchErr error) error {
 	if isContextError(fetchErr) || errors.Is(fetchErr, ErrResultLimit) {
 		return fetchErr
@@ -178,6 +181,7 @@ func (c *GatewayClient) operationFailure(ctx context.Context, sessionHandle, ope
 	return fetchErr
 }
 
+// nextURLString은 nil page와 주변 공백을 안전하게 처리한 다음 paging URI를 반환한다.
 func nextURLString(page *ResultPage) string {
 	if page == nil {
 		return ""

@@ -9,12 +9,13 @@ import (
 )
 
 const (
+	// 다음 값들은 호출자가 값을 생략했을 때 적용하는 안전한 기본 제한이다.
 	defaultRequestTimeout   = 10 * time.Second
 	defaultMaxResponseBytes = 8 << 20
 	defaultUserAgent        = "flink-sql-go/flinkrest"
 )
 
-// Config configures the independent Flink JobManager REST client.
+// Config는 독립적인 Flink JobManager REST client의 연결과 자원 제한을 설정한다.
 type Config struct {
 	BaseURL          string
 	HTTPClient       *http.Client
@@ -26,6 +27,7 @@ type Config struct {
 	ValidateJobID    bool
 }
 
+// normalize는 설정을 검증하고 호출자 설정을 변경하지 않은 채 사용할 HTTP client를 준비한다.
 func (cfg Config) normalize() (Config, *url.URL, *http.Client, bool, error) {
 	base, err := url.Parse(strings.TrimSpace(cfg.BaseURL))
 	if err != nil {
@@ -59,6 +61,7 @@ func (cfg Config) normalize() (Config, *url.URL, *http.Client, bool, error) {
 	}
 	cfg.Headers = headers
 
+	// owned는 Close가 idle connection을 정리해도 되는 client 소유권을 나타낸다.
 	owned := cfg.HTTPClient == nil || cfg.OwnHTTPTransport
 	var httpClient http.Client
 	if cfg.HTTPClient == nil {

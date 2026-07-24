@@ -6,8 +6,8 @@ import (
 	"fmt"
 )
 
-// ExecuteAndWait submits a statement, follows server-provided paging URIs,
-// collects at most MaxRows, and closes the operation.
+// ExecuteAndWait는 statement를 제출하고 server가 제공한 paging URI를 따라 MaxRows까지
+// 수집한 뒤 operation을 닫는다.
 func (c *GatewayClient) ExecuteAndWait(
 	ctx context.Context,
 	sessionHandle string,
@@ -23,8 +23,8 @@ func (c *GatewayClient) ExecuteAndWait(
 	return c.runExecution(executionCtx, sessionHandle, statement, options, settings, true, nil)
 }
 
-// StreamResults submits a statement and emits bounded events. Cancel ctx when
-// the consumer stops reading so producer backpressure cannot retain a goroutine.
+// StreamResults는 statement를 제출하고 bounded channel로 event를 전달한다. 소비를 중단하면
+// producer가 backpressure로 남지 않도록 ctx를 취소해야 한다.
 func (c *GatewayClient) StreamResults(
 	ctx context.Context,
 	sessionHandle string,
@@ -64,6 +64,7 @@ func (c *GatewayClient) StreamResults(
 	return events, errorsChannel
 }
 
+// executionSettings는 호출별 값과 client 기본값을 합쳐 유효한 실행 제한을 만든다.
 func (c *GatewayClient) executionSettings(options ExecuteOptions) (executionLimits, error) {
 	rowFormat := options.RowFormat
 	if rowFormat == "" {
@@ -86,6 +87,7 @@ func (c *GatewayClient) executionSettings(options ExecuteOptions) (executionLimi
 	return executionLimits{rowFormat: rowFormat, maxRows: maxRows, maxPolls: maxPolls}, nil
 }
 
+// runExecution은 제출, 결과 소비와 operation cleanup의 전체 수명주기를 소유한다.
 func (c *GatewayClient) runExecution(
 	ctx context.Context,
 	sessionHandle string,
@@ -139,12 +141,14 @@ func (c *GatewayClient) runExecution(
 	return result, nil
 }
 
+// cleanupOperation은 사용자 context와 분리된 제한 시간 안에서 operation 자원을 정리한다.
 func (c *GatewayClient) cleanupOperation(operation *Operation, reason error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), c.cfg.RequestTimeout)
 	defer cancel()
 	return c.cleanupOperationContext(withInternalCleanup(cleanupCtx), operation, reason)
 }
 
+// cleanupOperationContext는 원래 실패 원인을 보존하면서 필요한 cancel과 close 오류를 함께 반환한다.
 func (c *GatewayClient) cleanupOperationContext(ctx context.Context, operation *Operation, reason error) error {
 	if operation == nil {
 		return reason

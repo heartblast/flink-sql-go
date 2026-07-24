@@ -11,12 +11,13 @@ import (
 	"time"
 )
 
+// sessionCloseCall은 같은 session을 동시에 닫는 호출들이 첫 결과를 공유하게 한다.
 type sessionCloseCall struct {
 	done chan struct{}
 	err  error
 }
 
-// GetInfo returns SQL Gateway product metadata.
+// GetInfo는 SQL Gateway 제품 metadata를 조회한다.
 func (c *GatewayClient) GetInfo(ctx context.Context) (*GatewayInfo, error) {
 	target, _ := c.endpointURL(false, "/info")
 	var result GatewayInfo
@@ -26,11 +27,12 @@ func (c *GatewayClient) GetInfo(ctx context.Context) (*GatewayInfo, error) {
 	return &result, nil
 }
 
-// GetAPIVersions returns the versions advertised by /api_versions.
+// GetAPIVersions는 /api_versions가 광고하는 API 버전을 조회한다.
 func (c *GatewayClient) GetAPIVersions(ctx context.Context) ([]string, error) {
 	return c.getAPIVersions(ctx)
 }
 
+// getAPIVersions는 알려진 버전은 vN 형식으로 정규화하고 알 수 없는 값은 원문을 보존한다.
 func (c *GatewayClient) getAPIVersions(ctx context.Context) ([]string, error) {
 	target, _ := c.endpointURL(false, "/api_versions")
 	var response struct {
@@ -51,7 +53,7 @@ func (c *GatewayClient) getAPIVersions(ctx context.Context) ([]string, error) {
 	return versions, nil
 }
 
-// OpenSession creates stateful Flink session state. It never retries the POST.
+// OpenSession은 상태를 보존하는 Flink session을 만들며 POST를 자동 재시도하지 않는다.
 func (c *GatewayClient) OpenSession(ctx context.Context, req OpenSessionRequest) (*Session, error) {
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return nil, err
@@ -79,7 +81,7 @@ func (c *GatewayClient) OpenSession(ctx context.Context, req OpenSessionRequest)
 	return session, nil
 }
 
-// GetSessionConfig gets the current server-side session properties.
+// GetSessionConfig는 현재 server-side session property를 조회한다.
 func (c *GatewayClient) GetSessionConfig(ctx context.Context, sessionHandle string) (map[string]string, error) {
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return nil, err
@@ -94,8 +96,7 @@ func (c *GatewayClient) GetSessionConfig(ctx context.Context, sessionHandle stri
 	return response.Properties, nil
 }
 
-// ConfigureSession executes a v2+ session configuration statement. The POST
-// is never retried.
+// ConfigureSession은 v2 이상에서 session 설정 statement를 실행하며 POST를 자동 재시도하지 않는다.
 func (c *GatewayClient) ConfigureSession(ctx context.Context, sessionHandle, statement string, executionTimeout time.Duration) error {
 	if apiVersionNumber(c.cfg.APIVersion) < 2 {
 		return fmt.Errorf("%w: configure-session requires v2 or newer", ErrUnsupportedAPI)
@@ -118,7 +119,7 @@ func (c *GatewayClient) ConfigureSession(ctx context.Context, sessionHandle, sta
 	return err
 }
 
-// CompleteStatement returns v2+ SQL completion candidates.
+// CompleteStatement는 v2 이상에서 SQL 자동완성 후보를 반환한다.
 func (c *GatewayClient) CompleteStatement(ctx context.Context, sessionHandle, statement string, position int) ([]string, error) {
 	if apiVersionNumber(c.cfg.APIVersion) < 2 {
 		return nil, fmt.Errorf("%w: complete-statement requires v2 or newer", ErrUnsupportedAPI)
@@ -140,8 +141,8 @@ func (c *GatewayClient) CompleteStatement(ctx context.Context, sessionHandle, st
 	return response.Candidates, nil
 }
 
-// Heartbeat keeps a session alive. The idempotent heartbeat POST may be
-// retried once for transient transport errors.
+// Heartbeat는 session을 활성 상태로 유지한다. 멱등인 heartbeat POST는 일시적인 transport
+// 오류에 한해 한 번 재시도할 수 있다.
 func (c *GatewayClient) Heartbeat(ctx context.Context, sessionHandle string) error {
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return err
@@ -151,8 +152,8 @@ func (c *GatewayClient) Heartbeat(ctx context.Context, sessionHandle string) err
 	return err
 }
 
-// CloseSession stops heartbeat and closes a session. Concurrent repeated
-// calls share the first close result; a server-side not-found is idempotent.
+// CloseSession은 heartbeat를 멈추고 session을 닫는다. 동시에 중복 호출하면 첫 종료 결과를
+// 공유하며 server-side not-found는 멱등 성공으로 취급한다.
 func (c *GatewayClient) CloseSession(ctx context.Context, sessionHandle string) error {
 	c.stateMu.Lock()
 	if _, ok := c.closed[sessionHandle]; ok {
@@ -195,6 +196,7 @@ func (c *GatewayClient) CloseSession(ctx context.Context, sessionHandle string) 
 	return err
 }
 
+// validateStatement는 빈 SQL을 거부하고 주입된 소유권 및 SQL 정책을 실행 전에 적용한다.
 func (c *GatewayClient) validateStatement(ctx context.Context, sessionHandle, statement string) error {
 	if strings.TrimSpace(statement) == "" {
 		return fmt.Errorf("flinksqlgateway: statement is required")

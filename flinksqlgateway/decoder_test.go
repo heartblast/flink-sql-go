@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Preserve the original two-field Row representation for source compatibility.
+// 소스 호환성을 위해 기존의 두 field Row 표현을 보존한다.
 var _ = Row{RowInsert, nil}
 
 func TestDefaultValueDecoderScalarAndTemporalTypes(t *testing.T) {
