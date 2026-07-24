@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"flink-sql-go/flinksqlgateway"
+	"github.com/heartblast/flink-sql-go/flinksqlgateway"
 )
 
 var materializerColumns = []flinksqlgateway.ColumnInfo{

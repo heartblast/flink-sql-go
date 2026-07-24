@@ -1,4 +1,4 @@
-module flink-sql-go
+module github.com/heartblast/flink-sql-go
 
 go 1.26.5
 

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"flink-sql-go/flinksqlgateway"
+	"github.com/heartblast/flink-sql-go/flinksqlgateway"
 )
 
 func TestFlink1204Gateway(t *testing.T) {

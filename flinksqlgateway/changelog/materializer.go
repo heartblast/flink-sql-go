@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"flink-sql-go/flinksqlgateway"
+	"github.com/heartblast/flink-sql-go/flinksqlgateway"
 )
 
 const DefaultMaxRows = 100_000

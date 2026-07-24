@@ -7,7 +7,7 @@ import (
 
 const (
 	// SourceVersion is the source release line and must match VERSION.
-	SourceVersion = "0.1.0"
+	SourceVersion = "0.1.1"
 	// SupportedFlinkVersion is the tested Flink release and must match FLINK_VERSION.
 	SupportedFlinkVersion = "1.20.4"
 )

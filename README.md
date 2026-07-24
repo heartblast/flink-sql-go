@@ -2,12 +2,10 @@
 
 Apache Flink 1.20.4 SQL Gateway 전용 Go REST Client입니다. JDBC, JVM, GraalVM, CGO, `database/sql` 없이 표준 `net/http`로 동작합니다.
 
-현재 모듈 경로는 저장소 초기화를 위해 `flink-sql-go`로 설정되어 있습니다. 원격 Git 저장소를 정한 뒤 실제 경로로 바꾸십시오.
+Go module과 공개 import 경로는 다음과 같습니다.
 
-```powershell
-go mod edit -module github.com/<owner>/flink-sql-go
-go mod tidy
-git remote add origin <repository-url>
+```text
+github.com/heartblast/flink-sql-go
 ```
 
 Go 1.26.5를 기준으로 개발합니다. 런타임 Go 패키지 의존성은 없으며, 빌드 도구로 고정된 `govulncheck`만 별도 module graph에 포함됩니다.
@@ -29,11 +27,11 @@ PowerShell 5.1 이상에서 루트 빌드 스크립트를 실행합니다.
 5. `govulncheck` symbol scan 및 전체 module graph scan
 6. 라이브러리/Flink 버전 suffix가 포함된 소스 ZIP, build-info, 의존성 목록, SHA-256 생성
 
-라이브러리 버전 결정 우선순위는 `-Version`, `BUILD_VERSION`, 현재 commit의 정확한 `v*` tag, `VERSION` 순입니다. 기본 빌드는 `-dev`를 붙이지 않으며 현재 기준 산출물 이름은 `flink-sql-go-0.1.0-flink-1.20.4-*`입니다. Git commit과 dirty 상태는 버전 문자열 대신 build-info에 기록됩니다.
+라이브러리 버전 결정 우선순위는 `-Version`, `BUILD_VERSION`, 현재 commit의 정확한 `v*` tag, `VERSION` 순입니다. 기본 빌드는 `-dev`를 붙이지 않으며 현재 기준 산출물 이름은 `flink-sql-go-0.1.1-flink-1.20.4-*`입니다. Git commit과 dirty 상태는 버전 문자열 대신 build-info에 기록됩니다.
 
 ```powershell
 # 명시적 preview 버전
-.\build.ps1 -Version 0.1.0-rc.1
+.\build.ps1 -Version 0.2.0-rc.1
 
 # 다른 Flink patch release용 별도 검증 빌드
 .\build.ps1 -FlinkVersion 1.20.5
@@ -51,7 +49,7 @@ PowerShell 5.1 이상에서 루트 빌드 스크립트를 실행합니다.
 
 Go 1.26.5에는 이전 빌드에서 검출된 표준 라이브러리 취약점 `GO-2026-5856`, `GO-2026-4970`의 수정이 포함됩니다. 상세한 빌드·배포 절차는 [docs/build.md](docs/build.md)를 참고하십시오.
 
-`v0.1.0`의 기능, 호환성, 검증 결과와 공개 전 확인사항은 [릴리스 노트](docs/releases/v0.1.0.md)에 정리되어 있습니다.
+현재 릴리스의 기능, 호환성, 검증 결과는 [v0.1.1 릴리스 노트](docs/releases/v0.1.1.md)에 정리되어 있습니다.
 
 ## 주요 기능
 
@@ -86,7 +84,7 @@ import (
     "context"
     "time"
 
-    "flink-sql-go/flinksqlgateway"
+    "github.com/heartblast/flink-sql-go/flinksqlgateway"
 )
 
 func query(ctx context.Context) error {
@@ -224,7 +222,7 @@ if result.JobID != "" {
 }
 ```
 
-위 예제는 `"flink-sql-go/flinkrest"`를 import해야 하며, 원격 저장소 경로 확정 후 실제 module path로 바꾸어야 합니다.
+위 예제는 `"github.com/heartblast/flink-sql-go/flinkrest"`를 import합니다.
 
 ## Session Recipe
 
