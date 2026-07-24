@@ -47,7 +47,7 @@ func (c *GatewayClient) ExecuteStream(ctx context.Context, sessionHandle, statem
 		operation:    operation,
 		limits:       settings,
 		interval:     c.cfg.PollInterval,
-		currentEvent: ResultEvent{Type: ResultEventOperation, Operation: operation},
+		currentEvent: ResultEvent{Type: ResultEventOperation, Operation: cloneOperation(operation)},
 		cleanupDone:  make(chan struct{}),
 	}
 	if err := c.registerStream(stream); err != nil {
@@ -214,14 +214,14 @@ func (s *resultStream) setNextURL(page *ResultPage, required bool) error {
 func (s *resultStream) Event() ResultEvent {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
-	return s.currentEvent
+	return cloneResultEvent(s.currentEvent)
 }
 
 // Row는 최근 Next가 준비한 changelog row의 복사본을 반환한다.
 func (s *resultStream) Row() Row {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
-	return s.currentRow
+	return cloneRow(s.currentRow)
 }
 
 // Err는 iteration을 끝낸 주 오류와 보존된 cleanup 오류를 반환한다.
@@ -271,7 +271,12 @@ func (s *resultStream) finish(ctx context.Context, primary error, forceCancel bo
 		s.cancel()
 		var cancelErr error
 		if forceCancel || errors.Is(primary, ErrResultLimit) {
-			cancelErr = s.client.CancelOperation(ctx, s.operation.SessionHandle, s.operation.Handle)
+			cancelCtx, cancel := s.client.cancelStageContext(ctx)
+			cancelErr = s.client.CancelOperation(cancelCtx, s.operation.SessionHandle, s.operation.Handle)
+			cancel()
+			if errors.Is(cancelErr, ErrOperationNotFound) {
+				cancelErr = nil
+			}
 			s.client.observeLifecycle(ctx, Observation{Event: ObservationOperationCanceled, SessionHandle: s.operation.SessionHandle, OperationHandle: s.operation.Handle, Error: cancelErr})
 		}
 		closeErr := s.client.CloseOperation(ctx, s.operation.SessionHandle, s.operation.Handle)

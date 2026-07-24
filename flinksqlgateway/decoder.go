@@ -194,7 +194,7 @@ func (r Row) WithColumns(columns []ColumnInfo, decoder ValueDecoder) RowAccessor
 	}
 	return RowAccessor{
 		row:     r,
-		columns: append([]ColumnInfo(nil), columns...),
+		columns: cloneColumns(columns),
 		decoder: decoder,
 	}
 }
@@ -443,6 +443,9 @@ func decodeNestedRow(column Column, raw []byte) (any, error) {
 			return nil, decodeError(column, err)
 		}
 		result := make(map[string]any, len(fields))
+		for name, rawValue := range fields {
+			result[name] = append(json.RawMessage(nil), rawValue...)
+		}
 		for _, field := range column.LogicalType.Fields {
 			rawValue, ok := fields[field.Name]
 			if !ok {
@@ -490,6 +493,64 @@ func decodeNestedRow(column Column, raw []byte) (any, error) {
 		result[index] = value
 	}
 	return result, nil
+}
+
+// cloneColumns는 nested LogicalType과 raw JSON까지 포함해 column metadata를 깊게 복사한다.
+func cloneColumns(columns []ColumnInfo) []ColumnInfo {
+	result := make([]ColumnInfo, len(columns))
+	for index := range columns {
+		result[index] = columns[index]
+		result[index].LogicalType = cloneLogicalType(columns[index].LogicalType)
+		if columns[index].Comment != nil {
+			comment := *columns[index].Comment
+			result[index].Comment = &comment
+		}
+	}
+	return result
+}
+
+// cloneLogicalType은 재귀적인 element, map과 ROW field metadata를 공유하지 않게 복사한다.
+func cloneLogicalType(value LogicalType) LogicalType {
+	result := value
+	result.Length = cloneIntPointer(value.Length)
+	result.Precision = cloneIntPointer(value.Precision)
+	result.Scale = cloneIntPointer(value.Scale)
+	result.FractionalPrecision = cloneIntPointer(value.FractionalPrecision)
+	result.Raw = append(json.RawMessage(nil), value.Raw...)
+	if value.ElementType != nil {
+		cloned := cloneLogicalType(*value.ElementType)
+		result.ElementType = &cloned
+	}
+	if value.KeyType != nil {
+		cloned := cloneLogicalType(*value.KeyType)
+		result.KeyType = &cloned
+	}
+	if value.ValueType != nil {
+		cloned := cloneLogicalType(*value.ValueType)
+		result.ValueType = &cloned
+	}
+	result.Fields = make([]LogicalTypeField, len(value.Fields))
+	for index := range value.Fields {
+		result.Fields[index] = value.Fields[index]
+		if value.Fields[index].LogicalType != nil {
+			cloned := cloneLogicalType(*value.Fields[index].LogicalType)
+			result.Fields[index].LogicalType = &cloned
+		}
+		if value.Fields[index].Type != nil {
+			cloned := cloneLogicalType(*value.Fields[index].Type)
+			result.Fields[index].Type = &cloned
+		}
+	}
+	return result
+}
+
+// cloneIntPointer는 logical type의 선택적인 숫자 metadata pointer를 복사한다.
+func cloneIntPointer(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 // parseLocalTime은 timezone 의미를 추가하지 않고 Flink TIME 문자열을 UTC 기준 벽시계 값으로 담는다.

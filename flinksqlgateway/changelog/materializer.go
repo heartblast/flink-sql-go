@@ -95,6 +95,8 @@ type Materializer struct {
 	maxRows    int
 	rows       map[string]flinksqlgateway.Row
 	order      []string
+	orderIndex map[string]int
+	tombstones int
 	pending    map[string]struct{}
 }
 
@@ -132,6 +134,7 @@ func NewMaterializer(options ...Option) (*Materializer, error) {
 		columns:    cfg.columns,
 		maxRows:    cfg.maxRows,
 		rows:       make(map[string]flinksqlgateway.Row),
+		orderIndex: make(map[string]int),
 		pending:    make(map[string]struct{}),
 	}, nil
 }
@@ -156,6 +159,7 @@ func (m *Materializer) Apply(row flinksqlgateway.Row) error {
 			return fmt.Errorf("%w: limit=%d", ErrMaxRows, m.maxRows)
 		}
 		m.rows[key] = cloneRow(row)
+		m.orderIndex[key] = len(m.order)
 		m.order = append(m.order, key)
 		return nil
 
@@ -199,6 +203,54 @@ func (m *Materializer) Apply(row flinksqlgateway.Row) error {
 	}
 }
 
+// ApplyUpdate는 UPDATE_BEFORE와 UPDATE_AFTER pair를 중간 pending 상태 노출 없이 원자적으로 적용한다.
+func (m *Materializer) ApplyUpdate(before, after flinksqlgateway.Row) error {
+	if before.Kind != flinksqlgateway.RowUpdateBefore || after.Kind != flinksqlgateway.RowUpdateAfter {
+		return fmt.Errorf("%w: ApplyUpdate requires UPDATE_BEFORE and UPDATE_AFTER", ErrUpdateOrder)
+	}
+	beforeKey, err := m.rowKey(before)
+	if err != nil {
+		return err
+	}
+	afterKey, err := m.rowKey(after)
+	if err != nil {
+		return err
+	}
+	if beforeKey != afterKey {
+		return fmt.Errorf("%w: primary key changed", ErrUpdateOrder)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing, exists := m.rows[beforeKey]
+	if !exists {
+		return fmt.Errorf("%w: UPDATE_BEFORE", ErrRowNotFound)
+	}
+	if _, pending := m.pending[beforeKey]; pending {
+		return fmt.Errorf("%w: update is already pending", ErrUpdateOrder)
+	}
+	if !sameFields(existing, before) {
+		return fmt.Errorf("%w: UPDATE_BEFORE does not match current row", ErrUpdateOrder)
+	}
+	m.rows[beforeKey] = cloneRow(after)
+	return nil
+}
+
+// RollbackPending은 불완전한 UPDATE pair를 모두 폐기하고 기존 snapshot row를 유지한다.
+func (m *Materializer) RollbackPending() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := len(m.pending)
+	m.pending = make(map[string]struct{})
+	return count
+}
+
+// PendingUpdates는 UPDATE_AFTER를 기다리는 primary key 수를 반환한다.
+func (m *Materializer) PendingUpdates() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.pending)
+}
+
 // Snapshot은 안정적인 삽입 순서로 row의 깊은 복사본을 반환한다. 현재 table 상태를
 // 나타내므로 반환되는 RowKind는 INSERT로 정규화한다.
 func (m *Materializer) Snapshot() []flinksqlgateway.Row {
@@ -229,7 +281,10 @@ func (m *Materializer) rowKey(row flinksqlgateway.Row) (string, error) {
 		if null || len(bytes.TrimSpace(raw)) == 0 {
 			return "", fmt.Errorf("%w: column %q is NULL", ErrPrimaryKeyMissing, column)
 		}
-		compact := bytes.TrimSpace(raw)
+		compact, err := canonicalJSON(raw)
+		if err != nil {
+			return "", fmt.Errorf("%w: column %q is invalid JSON: %v", ErrPrimaryKeyMissing, column, err)
+		}
 		key.WriteString(strconv.Itoa(len(compact)))
 		key.WriteByte(':')
 		key.Write(compact)
@@ -240,14 +295,41 @@ func (m *Materializer) rowKey(row flinksqlgateway.Row) (string, error) {
 
 // removeOrder는 삭제된 row key를 안정적인 snapshot 순서에서도 제거한다.
 func (m *Materializer) removeOrder(key string) {
-	for index, candidate := range m.order {
-		if candidate != key {
-			continue
-		}
-		copy(m.order[index:], m.order[index+1:])
-		m.order = m.order[:len(m.order)-1]
+	index, exists := m.orderIndex[key]
+	if !exists {
 		return
 	}
+	delete(m.orderIndex, key)
+	m.order[index] = ""
+	m.tombstones++
+	if m.tombstones > 1024 && m.tombstones*2 > len(m.order) {
+		m.compactOrderLocked()
+	}
+}
+
+// compactOrderLocked는 충분한 tombstone이 쌓였을 때 insertion order index를 한 번에 재구성한다.
+func (m *Materializer) compactOrderLocked() {
+	compacted := make([]string, 0, len(m.order)-m.tombstones)
+	for _, key := range m.order {
+		if key == "" {
+			continue
+		}
+		m.orderIndex[key] = len(compacted)
+		compacted = append(compacted, key)
+	}
+	m.order = compacted
+	m.tombstones = 0
+}
+
+// canonicalJSON은 primary key의 공백, object key 순서와 문자열 escape 표현을 정규화한다.
+func canonicalJSON(raw json.RawMessage) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return json.Marshal(value)
 }
 
 // cloneRow는 호출자가 snapshot 내부 JSON byte를 변경하지 못하도록 row를 깊게 복사한다.

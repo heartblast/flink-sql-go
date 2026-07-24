@@ -70,6 +70,44 @@ func TestExecuteStatementPreSendFailureIsNotOutcomeUnknown(t *testing.T) {
 	}
 }
 
+func TestExecuteStatementHTTPStatusClassification(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		wantUnknown bool
+	}{
+		{name: "bad request", status: http.StatusBadRequest},
+		{name: "request timeout", status: http.StatusRequestTimeout, wantUnknown: true},
+		{name: "too many requests", status: http.StatusTooManyRequests, wantUnknown: true},
+		{name: "internal error", status: http.StatusInternalServerError, wantUnknown: true},
+		{name: "unavailable", status: http.StatusServiceUnavailable, wantUnknown: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api_versions":
+					writeTestJSON(t, w, map[string]any{"versions": []string{"V3"}})
+				case "/v3/sessions/s/statements":
+					http.Error(w, "submission failed", test.status)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			client := newTestClient(t, Config{BaseURL: server.URL})
+			_, err := client.ExecuteStatement(context.Background(), "s", ExecuteStatementRequest{Statement: "INSERT INTO sink SELECT * FROM source"})
+			if errors.Is(err, ErrExecutionOutcomeUnknown) != test.wantUnknown {
+				t.Fatalf("ExecuteStatement() error = %v", err)
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.Retryable {
+				t.Fatalf("API error = %#v", apiErr)
+			}
+		})
+	}
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {

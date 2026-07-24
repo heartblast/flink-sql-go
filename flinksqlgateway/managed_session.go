@@ -57,12 +57,14 @@ type managedSession struct {
 	runner          *HeartbeatRunner
 	serializer      *sessionSerializer
 	monitorDone     chan struct{}
+	activity        *activityGroup
 
-	mu        sync.RWMutex
-	health    SessionHealth
-	closeErr  error
-	closeOnce sync.Once
-	closeDone chan struct{}
+	mu            sync.RWMutex
+	health        SessionHealth
+	shutdownOnce  sync.Once
+	closeMu       sync.Mutex
+	closeCall     *sessionCloseCall
+	closeComplete bool
 }
 
 // 컴파일 시 managedSession이 공개 ManagedSession 계약을 모두 구현하는지 확인한다.
@@ -99,8 +101,8 @@ func (c *GatewayClient) OpenManagedSession(ctx context.Context, req OpenSessionR
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
 		monitorDone:     make(chan struct{}),
+		activity:        newActivityGroup(ErrSessionClosed),
 		health:          SessionHealthy,
-		closeDone:       make(chan struct{}),
 	}
 	if options.Serialize {
 		managed.serializer = newSessionSerializer(c, session.Handle, lifecycleCtx)
@@ -143,6 +145,10 @@ func (m *managedSession) Execute(ctx context.Context, statement string, options 
 	if err := m.executionAllowed(); err != nil {
 		return nil, err
 	}
+	if err := m.activity.begin(); err != nil {
+		return nil, err
+	}
+	defer m.activity.end()
 	if m.serializer != nil {
 		return m.serializer.execute(ctx, statement, options)
 	}
@@ -156,16 +162,39 @@ func (m *managedSession) Stream(ctx context.Context, statement string, options S
 	if err := m.executionAllowed(); err != nil {
 		return nil, err
 	}
-	if m.serializer != nil {
-		return m.serializer.stream(ctx, statement, options)
-	}
-	executionCtx, cancel := mergeContext(ctx, m.lifecycleCtx)
-	stream, err := m.client.ExecuteStream(executionCtx, m.session.Handle, statement, options)
-	if err != nil {
-		cancel()
+	if err := m.activity.begin(); err != nil {
 		return nil, err
 	}
-	return &callbackResultStream{ResultStream: stream, onClose: cancel}, nil
+	var stream ResultStream
+	var cancel context.CancelFunc
+	var err error
+	if m.serializer != nil {
+		stream, err = m.serializer.stream(ctx, statement, options)
+	} else {
+		var executionCtx context.Context
+		executionCtx, cancel = mergeContext(ctx, m.lifecycleCtx)
+		stream, err = m.client.ExecuteStream(executionCtx, m.session.Handle, statement, options)
+	}
+	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
+		m.activity.end()
+		return nil, err
+	}
+	var wrapped *callbackResultStream
+	wrapped = &callbackResultStream{ResultStream: stream, onClose: func() {
+		m.activity.unregisterStream(wrapped)
+		m.activity.end()
+		if cancel != nil {
+			cancel()
+		}
+	}}
+	if err := m.activity.registerStream(wrapped); err != nil {
+		_ = wrapped.Close()
+		return nil, err
+	}
+	return wrapped, nil
 }
 
 // executionAllowed는 닫히거나 만료된 session에서 새 실행을 시작하지 못하게 한다.
@@ -227,34 +256,69 @@ func (m *managedSession) Close(ctx context.Context) error {
 
 // closeWithContext는 외부 호출과 client 주도 cleanup이 공유하는 실제 종료 절차를 수행한다.
 func (m *managedSession) closeWithContext(ctx context.Context) error {
-	m.closeOnce.Do(func() {
-		defer close(m.closeDone)
+	m.shutdownOnce.Do(func() {
+		streams := m.activity.stop()
 		m.lifecycleCancel()
+		if m.serializer != nil {
+			m.serializer.closeLocal(ctx)
+		}
+		for _, stream := range streams {
+			_ = closeTrackedResultStream(ctx, stream, nil)
+		}
 		if m.runner != nil {
 			m.runner.Stop()
 			<-m.monitorDone
 		}
-		if m.serializer != nil {
-			m.serializer.closeLocal()
-		}
-		closeCtx := ctx
-		cancel := func() {}
-		if m.options.CleanupTimeout > 0 {
-			closeCtx, cancel = context.WithTimeout(ctx, m.options.CleanupTimeout)
-		}
-		m.closeErr = m.client.CloseSession(closeCtx, m.session.Handle)
-		cancel()
 		m.mu.Lock()
-		previous := m.health
 		m.health = SessionClosed
 		m.mu.Unlock()
-		m.client.unregisterManaged(m)
-		m.client.observeLifecycle(ctx, Observation{Event: ObservationSessionClosed, SessionHandle: m.session.Handle, PreviousHealth: previous, CurrentHealth: SessionClosed, Error: m.closeErr})
 	})
-	select {
-	case <-m.closeDone:
-		return m.closeErr
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := m.activity.wait(ctx); err != nil {
+		return err
 	}
+	if m.serializer != nil {
+		if err := m.serializer.waitIdle(ctx); err != nil {
+			return err
+		}
+	}
+
+	m.closeMu.Lock()
+	if m.closeComplete {
+		m.closeMu.Unlock()
+		return nil
+	}
+	if call := m.closeCall; call != nil {
+		m.closeMu.Unlock()
+		select {
+		case <-call.done:
+			return call.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	call := &sessionCloseCall{done: make(chan struct{})}
+	m.closeCall = call
+	m.closeMu.Unlock()
+
+	closeCtx := ctx
+	cancel := func() {}
+	if m.options.CleanupTimeout > 0 {
+		closeCtx, cancel = context.WithTimeout(ctx, m.options.CleanupTimeout)
+	}
+	err := m.client.CloseSession(closeCtx, m.session.Handle)
+	cancel()
+
+	m.closeMu.Lock()
+	m.closeCall = nil
+	if err == nil {
+		m.closeComplete = true
+	}
+	call.err = err
+	close(call.done)
+	m.closeMu.Unlock()
+	if err == nil {
+		m.client.unregisterManaged(m)
+	}
+	m.client.observeLifecycle(ctx, Observation{Event: ObservationSessionClosed, SessionHandle: m.session.Handle, CurrentHealth: SessionClosed, Error: err})
+	return err
 }

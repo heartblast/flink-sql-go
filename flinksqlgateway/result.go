@@ -71,7 +71,7 @@ func (c *GatewayClient) consumeResults(
 				result.JobID = page.JobID
 			}
 			if page.Results != nil && len(result.Columns) == 0 {
-				result.Columns = append([]ColumnInfo(nil), page.Results.Columns...)
+				result.Columns = cloneColumns(page.Results.Columns)
 			}
 
 			if emit != nil {
@@ -92,7 +92,8 @@ func (c *GatewayClient) consumeResults(
 					}
 					result.RowsReceived++
 					if emit != nil {
-						if err := emit(ResultEvent{Type: ResultEventRow, Row: &row}); err != nil {
+						rowSnapshot := cloneRow(row)
+						if err := emit(ResultEvent{Type: ResultEventRow, Row: &rowSnapshot}); err != nil {
 							return result, err
 						}
 					}
@@ -126,17 +127,15 @@ func (c *GatewayClient) consumeResults(
 
 // pageWithoutRows는 stream page event가 row 전체를 중복 보관하지 않도록 metadata만 복사한다.
 func pageWithoutRows(page *ResultPage) *ResultPage {
-	if page == nil {
+	copyPage := cloneResultPage(page)
+	if copyPage == nil {
 		return nil
 	}
-	copyPage := *page
 	copyPage.Raw = nil
-	if page.Results != nil {
-		copyInfo := *page.Results
-		copyInfo.Data = nil
-		copyPage.Results = &copyInfo
+	if copyPage.Results != nil {
+		copyPage.Results.Data = nil
 	}
-	return &copyPage
+	return copyPage
 }
 
 // nextPollInterval은 overflow와 설정 상한을 지키며 polling 간격을 두 배로 늘린다.

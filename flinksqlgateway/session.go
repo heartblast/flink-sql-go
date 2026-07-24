@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// maxRememberedClosedSessions는 Close 멱등성을 위해 보관할 최근 session handle의 상한이다.
+const maxRememberedClosedSessions = 1024
+
 // sessionCloseCall은 같은 session을 동시에 닫는 호출들이 첫 결과를 공유하게 한다.
 type sessionCloseCall struct {
 	done chan struct{}
@@ -68,21 +71,27 @@ func (c *GatewayClient) OpenSession(ctx context.Context, req OpenSessionRequest)
 	if response.Handle == "" {
 		return nil, fmt.Errorf("flinksqlgateway: open session response has no sessionHandle")
 	}
-	session := &Session{
-		Handle:     response.Handle,
-		Name:       req.SessionName,
-		Properties: cloneMap(req.Properties),
-		CreatedAt:  time.Now(),
+	if err := validateSessionHandle(response.Handle); err != nil {
+		return nil, fmt.Errorf("flinksqlgateway: invalid open session response: %w", err)
+	}
+	record := &sessionRecord{
+		handle:     response.Handle,
+		name:       req.SessionName,
+		properties: cloneMap(req.Properties),
+		createdAt:  time.Now(),
 	}
 	c.stateMu.Lock()
-	c.sessions[session.Handle] = session
-	delete(c.closed, session.Handle)
+	c.sessions[record.handle] = record
+	c.forgetClosedSessionLocked(record.handle)
 	c.stateMu.Unlock()
-	return session, nil
+	return record.snapshot(), nil
 }
 
 // GetSessionConfig는 현재 server-side session property를 조회한다.
 func (c *GatewayClient) GetSessionConfig(ctx context.Context, sessionHandle string) (map[string]string, error) {
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return nil, err
+	}
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return nil, err
 	}
@@ -98,6 +107,9 @@ func (c *GatewayClient) GetSessionConfig(ctx context.Context, sessionHandle stri
 
 // ConfigureSession은 v2 이상에서 session 설정 statement를 실행하며 POST를 자동 재시도하지 않는다.
 func (c *GatewayClient) ConfigureSession(ctx context.Context, sessionHandle, statement string, executionTimeout time.Duration) error {
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return err
+	}
 	if apiVersionNumber(c.cfg.APIVersion) < 2 {
 		return fmt.Errorf("%w: configure-session requires v2 or newer", ErrUnsupportedAPI)
 	}
@@ -121,6 +133,9 @@ func (c *GatewayClient) ConfigureSession(ctx context.Context, sessionHandle, sta
 
 // CompleteStatement는 v2 이상에서 SQL 자동완성 후보를 반환한다.
 func (c *GatewayClient) CompleteStatement(ctx context.Context, sessionHandle, statement string, position int) ([]string, error) {
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return nil, err
+	}
 	if apiVersionNumber(c.cfg.APIVersion) < 2 {
 		return nil, fmt.Errorf("%w: complete-statement requires v2 or newer", ErrUnsupportedAPI)
 	}
@@ -144,6 +159,9 @@ func (c *GatewayClient) CompleteStatement(ctx context.Context, sessionHandle, st
 // Heartbeat는 session을 활성 상태로 유지한다. 멱등인 heartbeat POST는 일시적인 transport
 // 오류에 한해 한 번 재시도할 수 있다.
 func (c *GatewayClient) Heartbeat(ctx context.Context, sessionHandle string) error {
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return err
+	}
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return err
 	}
@@ -155,6 +173,9 @@ func (c *GatewayClient) Heartbeat(ctx context.Context, sessionHandle string) err
 // CloseSession은 heartbeat를 멈추고 session을 닫는다. 동시에 중복 호출하면 첫 종료 결과를
 // 공유하며 server-side not-found는 멱등 성공으로 취급한다.
 func (c *GatewayClient) CloseSession(ctx context.Context, sessionHandle string) error {
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return err
+	}
 	c.stateMu.Lock()
 	if _, ok := c.closed[sessionHandle]; ok {
 		c.stateMu.Unlock()
@@ -187,13 +208,44 @@ func (c *GatewayClient) CloseSession(ctx context.Context, sessionHandle string) 
 	c.stateMu.Lock()
 	delete(c.closeCalls, sessionHandle)
 	if err == nil {
-		c.closed[sessionHandle] = struct{}{}
+		c.rememberClosedSessionLocked(sessionHandle)
 		delete(c.sessions, sessionHandle)
 	}
 	call.err = err
 	close(call.done)
 	c.stateMu.Unlock()
 	return err
+}
+
+// rememberClosedSessionLocked는 stateMu를 보유한 상태에서 최근 Close 결과를 bounded cache에 기록한다.
+func (c *GatewayClient) rememberClosedSessionLocked(sessionHandle string) {
+	if _, exists := c.closed[sessionHandle]; exists {
+		return
+	}
+	c.closed[sessionHandle] = struct{}{}
+	c.closedOrder = append(c.closedOrder, sessionHandle)
+	if len(c.closedOrder) <= maxRememberedClosedSessions {
+		return
+	}
+	oldest := c.closedOrder[0]
+	c.closedOrder = c.closedOrder[1:]
+	delete(c.closed, oldest)
+}
+
+// forgetClosedSessionLocked는 server가 같은 handle을 다시 발급했을 때 이전 Close cache 순서를 함께 제거한다.
+func (c *GatewayClient) forgetClosedSessionLocked(sessionHandle string) {
+	if _, exists := c.closed[sessionHandle]; !exists {
+		return
+	}
+	delete(c.closed, sessionHandle)
+	for index, candidate := range c.closedOrder {
+		if candidate != sessionHandle {
+			continue
+		}
+		copy(c.closedOrder[index:], c.closedOrder[index+1:])
+		c.closedOrder = c.closedOrder[:len(c.closedOrder)-1]
+		return
+	}
 }
 
 // validateStatement는 빈 SQL을 거부하고 주입된 소유권 및 SQL 정책을 실행 전에 적용한다.

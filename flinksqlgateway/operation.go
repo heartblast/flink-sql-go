@@ -13,6 +13,9 @@ import (
 // ExecuteStatement는 SQL을 제출하고 비동기 operation handle을 반환한다. 중복 실행 위험 때문에
 // POST를 의도적으로 자동 재시도하지 않는다.
 func (c *GatewayClient) ExecuteStatement(ctx context.Context, sessionHandle string, req ExecuteStatementRequest) (*Operation, error) {
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return nil, err
+	}
 	if err := c.validateStatement(ctx, sessionHandle, req.Statement); err != nil {
 		return nil, err
 	}
@@ -41,7 +44,7 @@ func (c *GatewayClient) ExecuteStatement(ctx context.Context, sessionHandle stri
 	}
 	if _, err := c.doJSON(ctx, http.MethodPost, target, body, &response, false); err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.RequestPhase != "" && apiErr.RequestPhase != RequestNotSent {
+		if errors.As(err, &apiErr) && statementOutcomeIsUnknown(apiErr) {
 			unknown := &ExecutionOutcomeUnknownError{
 				SessionHandle: sessionHandle,
 				Method:        http.MethodPost,
@@ -67,8 +70,8 @@ func (c *GatewayClient) ExecuteStatement(ctx context.Context, sessionHandle stri
 		})
 		return nil, err
 	}
-	if response.Handle == "" {
-		cause := fmt.Errorf("flinksqlgateway: execute response has no operationHandle")
+	if handleErr := validateOperationHandle(response.Handle); handleErr != nil {
+		cause := fmt.Errorf("flinksqlgateway: execute response has invalid operationHandle: %w", handleErr)
 		unknown := &ExecutionOutcomeUnknownError{
 			SessionHandle: sessionHandle,
 			Method:        http.MethodPost,
@@ -90,8 +93,30 @@ func (c *GatewayClient) ExecuteStatement(ctx context.Context, sessionHandle stri
 	return operation, nil
 }
 
+// statementOutcomeIsUnknown은 비멱등 SQL 제출이 server에서 실행됐을 가능성을 보수적으로 판별한다.
+func statementOutcomeIsUnknown(apiErr *APIError) bool {
+	if apiErr == nil || apiErr.RequestPhase == "" || apiErr.RequestPhase == RequestNotSent {
+		return false
+	}
+	if apiErr.StatusCode == 0 {
+		return true
+	}
+	if apiErr.StatusCode >= http.StatusOK && apiErr.StatusCode < http.StatusMultipleChoices {
+		return true
+	}
+	return apiErr.StatusCode == http.StatusRequestTimeout ||
+		apiErr.StatusCode == http.StatusTooManyRequests ||
+		apiErr.StatusCode >= http.StatusInternalServerError
+}
+
 // GetOperationStatus는 이후 Flink 상태도 보존하는 열린 operation 상태값을 반환한다.
 func (c *GatewayClient) GetOperationStatus(ctx context.Context, sessionHandle, operationHandle string) (OperationStatus, error) {
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return "", err
+	}
+	if err := validateOperationHandle(operationHandle); err != nil {
+		return "", err
+	}
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return "", err
 	}
@@ -108,6 +133,15 @@ func (c *GatewayClient) GetOperationStatus(ctx context.Context, sessionHandle, o
 // FetchResults는 지정한 결과 token을 가져온다. Flink v1은 server 기본 JSON만 사용하고
 // rowFormat을 받지 않으므로 PLAIN_TEXT는 v2 이상이 필요하다.
 func (c *GatewayClient) FetchResults(ctx context.Context, sessionHandle, operationHandle string, token int64, rowFormat RowFormat) (*ResultPage, error) {
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return nil, err
+	}
+	if err := validateOperationHandle(operationHandle); err != nil {
+		return nil, err
+	}
+	if token < 0 {
+		return nil, fmt.Errorf("flinksqlgateway: result token must not be negative")
+	}
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return nil, err
 	}
@@ -142,6 +176,12 @@ func (c *GatewayClient) fetchResultsURL(ctx context.Context, target *url.URL) (*
 
 // CancelOperation은 operation 취소를 요청하며 POST를 자동 재시도하지 않는다.
 func (c *GatewayClient) CancelOperation(ctx context.Context, sessionHandle, operationHandle string) error {
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return err
+	}
+	if err := validateOperationHandle(operationHandle); err != nil {
+		return err
+	}
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return err
 	}
@@ -153,6 +193,12 @@ func (c *GatewayClient) CancelOperation(ctx context.Context, sessionHandle, oper
 // CloseOperation은 operation 자원을 해제하며 DELETE를 자동 재시도하지 않는다.
 // not-found 응답은 멱등인 종료 성공으로 취급한다.
 func (c *GatewayClient) CloseOperation(ctx context.Context, sessionHandle, operationHandle string) error {
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return err
+	}
+	if err := validateOperationHandle(operationHandle); err != nil {
+		return err
+	}
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return err
 	}

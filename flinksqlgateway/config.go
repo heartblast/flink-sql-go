@@ -23,6 +23,8 @@ const (
 	defaultMaxResponseBytes  = 8 << 20
 	defaultMaxPolls          = 10_000
 	defaultStreamBuffer      = 16
+	defaultObserverTimeout   = 100 * time.Millisecond
+	defaultObserverInFlight  = 16
 	defaultUserAgent         = "flink-sql-go/0.1"
 )
 
@@ -58,6 +60,10 @@ type Config struct {
 	// LifecycleObserver는 선택적인 고수준 수명주기 event를 받는다. nil이면 Observer가
 	// LifecycleObserver도 구현하는지 확인하여 사용한다.
 	LifecycleObserver LifecycleObserver
+	// ObserverTimeout은 관측 callback이 요청 또는 cleanup을 지연할 수 있는 최대 시간이다.
+	ObserverTimeout time.Duration
+	// ObserverMaxInFlight는 동시에 실행할 관측 callback의 상한이며 초과 event는 버린다.
+	ObserverMaxInFlight int
 }
 
 // normalize는 설정을 검증하고 호출자의 HTTP client 값을 직접 변경하지 않은 채 사용할 복사본을 만든다.
@@ -114,6 +120,12 @@ func (cfg Config) normalize() (Config, *url.URL, *http.Client, error) {
 	if cfg.StreamBuffer == 0 {
 		cfg.StreamBuffer = defaultStreamBuffer
 	}
+	if cfg.ObserverTimeout == 0 {
+		cfg.ObserverTimeout = defaultObserverTimeout
+	}
+	if cfg.ObserverMaxInFlight == 0 {
+		cfg.ObserverMaxInFlight = defaultObserverInFlight
+	}
 	if cfg.DefaultRowFormat == "" {
 		cfg.DefaultRowFormat = RowFormatJSON
 	}
@@ -121,13 +133,13 @@ func (cfg Config) normalize() (Config, *url.URL, *http.Client, error) {
 		cfg.UserAgent = defaultUserAgent
 	}
 
-	if cfg.RequestTimeout < 0 || cfg.ExecutionTimeout < 0 || cfg.PollInterval <= 0 || cfg.MaxPollInterval <= 0 || cfg.HeartbeatInterval <= 0 {
+	if cfg.RequestTimeout < 0 || cfg.ExecutionTimeout < 0 || cfg.PollInterval <= 0 || cfg.MaxPollInterval <= 0 || cfg.HeartbeatInterval <= 0 || cfg.ObserverTimeout < 0 {
 		return Config{}, nil, nil, fmt.Errorf("flinksqlgateway: timeouts and intervals must be positive")
 	}
 	if cfg.MaxPollInterval < cfg.PollInterval {
 		return Config{}, nil, nil, fmt.Errorf("flinksqlgateway: MaxPollInterval must be at least PollInterval")
 	}
-	if cfg.MaxResultRows < 0 || cfg.MaxResponseBytes <= 0 || cfg.MaxPolls <= 0 || cfg.StreamBuffer <= 0 {
+	if cfg.MaxResultRows < 0 || cfg.MaxResponseBytes <= 0 || cfg.MaxPolls <= 0 || cfg.StreamBuffer <= 0 || cfg.ObserverMaxInFlight <= 0 {
 		return Config{}, nil, nil, fmt.Errorf("flinksqlgateway: result, response, poll, and stream limits must be positive")
 	}
 	if !cfg.DefaultRowFormat.valid() {

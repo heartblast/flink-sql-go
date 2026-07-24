@@ -9,9 +9,10 @@ import (
 // SerializedSession은 한 session의 전체 실행을 직렬화하되 다른 session과 기반 GatewayClient의
 // 동시 실행은 허용한다.
 type SerializedSession struct {
-	serializer *sessionSerializer
-	closeOnce  sync.Once
-	closeErr   error
+	serializer    *sessionSerializer
+	closeMu       sync.Mutex
+	closeCall     *sessionCloseCall
+	closeComplete bool
 }
 
 // NewSerializedSession은 sessionHandle에 로컬 실행 gate를 만든다. wrapper는 CloseSession을
@@ -49,20 +50,47 @@ func (s *SerializedSession) Stream(ctx context.Context, statement string, option
 }
 
 // Close는 대기 중인 작업을 거부하고 실행 중 작업을 취소한 뒤 기반 Flink session을 닫는다.
-// 중복 호출은 첫 결과를 반환한다.
+// 성공 결과는 재사용하고 context 오류로 끝난 server cleanup은 다음 호출에서 다시 시도한다.
 func (s *SerializedSession) Close(ctx context.Context) error {
 	if s == nil || s.serializer == nil {
 		return nil
 	}
-	s.closeOnce.Do(func() {
-		s.serializer.closeLocal()
-		if s.serializer.client == nil {
-			s.closeErr = fmt.Errorf("flinksqlgateway: client is required")
-			return
+	s.serializer.closeLocal(ctx)
+	if err := s.serializer.waitIdle(ctx); err != nil {
+		return err
+	}
+	if s.serializer.client == nil {
+		return fmt.Errorf("flinksqlgateway: client is required")
+	}
+
+	s.closeMu.Lock()
+	if s.closeComplete {
+		s.closeMu.Unlock()
+		return nil
+	}
+	if call := s.closeCall; call != nil {
+		s.closeMu.Unlock()
+		select {
+		case <-call.done:
+			return call.err
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		s.closeErr = s.serializer.client.CloseSession(ctx, s.serializer.sessionHandle)
-	})
-	return s.closeErr
+	}
+	call := &sessionCloseCall{done: make(chan struct{})}
+	s.closeCall = call
+	s.closeMu.Unlock()
+
+	err := s.serializer.client.CloseSession(ctx, s.serializer.sessionHandle)
+	s.closeMu.Lock()
+	s.closeCall = nil
+	if err == nil {
+		s.closeComplete = true
+	}
+	call.err = err
+	close(call.done)
+	s.closeMu.Unlock()
+	return err
 }
 
 // sessionSerializer는 channel token 하나로 session 실행권을 관리하고 종료 시 대기자를 취소한다.
@@ -72,8 +100,7 @@ type sessionSerializer struct {
 	gate          chan struct{}
 	lifecycleCtx  context.Context
 	cancel        context.CancelFunc
-	mu            sync.RWMutex
-	closed        bool
+	activity      *activityGroup
 	closeOnce     sync.Once
 }
 
@@ -86,6 +113,7 @@ func newSessionSerializer(client *GatewayClient, sessionHandle string, parent co
 		gate:          make(chan struct{}, 1),
 		lifecycleCtx:  lifecycleCtx,
 		cancel:        cancel,
+		activity:      newActivityGroup(ErrSessionClosed),
 	}
 	serializer.gate <- struct{}{}
 	return serializer
@@ -102,6 +130,10 @@ func (s *sessionSerializer) execute(ctx context.Context, statement string, optio
 		return nil, err
 	}
 	defer s.release()
+	if err := s.activity.begin(); err != nil {
+		return nil, err
+	}
+	defer s.activity.end()
 	return s.client.ExecuteAndWait(executionCtx, s.sessionHandle, statement, options)
 }
 
@@ -115,19 +147,33 @@ func (s *sessionSerializer) stream(ctx context.Context, statement string, option
 		cancel()
 		return nil, err
 	}
-	stream, err := s.client.ExecuteStream(executionCtx, s.sessionHandle, statement, options)
-	if err != nil {
+	if err := s.activity.begin(); err != nil {
 		s.release()
 		cancel()
 		return nil, err
 	}
-	return &callbackResultStream{
+	stream, err := s.client.ExecuteStream(executionCtx, s.sessionHandle, statement, options)
+	if err != nil {
+		s.activity.end()
+		s.release()
+		cancel()
+		return nil, err
+	}
+	var wrapped *callbackResultStream
+	wrapped = &callbackResultStream{
 		ResultStream: stream,
 		onClose: func() {
+			s.activity.unregisterStream(wrapped)
+			s.activity.end()
 			s.release()
 			cancel()
 		},
-	}, nil
+	}
+	if err := s.activity.registerStream(wrapped); err != nil {
+		_ = wrapped.Close()
+		return nil, err
+	}
+	return wrapped, nil
 }
 
 // validate는 client, session handle과 로컬 종료 상태를 확인한다.
@@ -135,13 +181,10 @@ func (s *sessionSerializer) validate() error {
 	if s.client == nil {
 		return fmt.Errorf("flinksqlgateway: client is required")
 	}
-	if s.sessionHandle == "" {
-		return fmt.Errorf("flinksqlgateway: session handle is required")
+	if err := validateSessionHandle(s.sessionHandle); err != nil {
+		return err
 	}
-	s.mu.RLock()
-	closed := s.closed
-	s.mu.RUnlock()
-	if closed {
+	if s.activity.isClosed() {
 		return ErrSessionClosed
 	}
 	return nil
@@ -171,19 +214,23 @@ func (s *sessionSerializer) release() {
 
 // isClosed는 동시 호출에 안전하게 로컬 종료 상태를 반환한다.
 func (s *sessionSerializer) isClosed() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.closed
+	return s.activity.isClosed()
 }
 
 // closeLocal은 새 실행을 막고 실행 및 대기 중인 context를 취소한다.
-func (s *sessionSerializer) closeLocal() {
+func (s *sessionSerializer) closeLocal(ctx context.Context) {
 	s.closeOnce.Do(func() {
-		s.mu.Lock()
-		s.closed = true
-		s.mu.Unlock()
+		streams := s.activity.stop()
 		s.cancel()
+		for _, stream := range streams {
+			_ = closeTrackedResultStream(ctx, stream, nil)
+		}
 	})
+}
+
+// waitIdle은 실행 및 stream cleanup이 모두 끝나거나 context가 취소될 때까지 기다린다.
+func (s *sessionSerializer) waitIdle(ctx context.Context) error {
+	return s.activity.wait(ctx)
 }
 
 // mergeContext는 호출 context와 상위 수명주기 중 하나가 끝나면 함께 취소되는 context를 만든다.
@@ -201,6 +248,19 @@ type callbackResultStream struct {
 	ResultStream
 	onClose func()
 	once    sync.Once
+}
+
+// contextualResultStream은 wrapper Close의 context 예산을 기반 stream cleanup까지 전달한다.
+type contextualResultStream interface {
+	closeWithContext(context.Context, error) error
+}
+
+// closeTrackedResultStream은 내부 stream이면 호출자의 Close context로 정리하고 호환 구현은 기존 Close를 호출한다.
+func closeTrackedResultStream(ctx context.Context, stream ResultStream, terminalErr error) error {
+	if contextual, ok := stream.(contextualResultStream); ok {
+		return contextual.closeWithContext(ctx, terminalErr)
+	}
+	return stream.Close()
 }
 
 // finish는 등록된 종료 callback을 최대 한 번 실행한다.
@@ -224,6 +284,13 @@ func (s *callbackResultStream) Next() bool {
 // Close는 기반 stream과 상위 자원을 모두 종료한다.
 func (s *callbackResultStream) Close() error {
 	err := s.ResultStream.Close()
+	s.finish()
+	return err
+}
+
+// closeWithContext는 기반 내부 stream에 종료 예산을 전달하고 상위 실행권도 반드시 해제한다.
+func (s *callbackResultStream) closeWithContext(ctx context.Context, terminalErr error) error {
+	err := closeTrackedResultStream(ctx, s.ResultStream, terminalErr)
 	s.finish()
 	return err
 }

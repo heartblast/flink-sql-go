@@ -44,6 +44,8 @@ const (
 	ResponseHeaderMissing RequestPhase = "RESPONSE_HEADER_MISSING"
 	// ResponseBodyIncomplete는 응답 header 뒤 body 수신이 완료되지 않은 상태이다.
 	ResponseBodyIncomplete RequestPhase = "RESPONSE_BODY_INCOMPLETE"
+	// ResponseReceived는 server가 완전한 non-2xx HTTP 응답을 반환한 상태이다.
+	ResponseReceived RequestPhase = "RESPONSE_RECEIVED"
 )
 
 // ExecutionOutcomeUnknownError는 server 처리 결과를 안전하게 판단할 수 없는 statement

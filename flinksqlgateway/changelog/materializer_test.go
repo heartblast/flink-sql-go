@@ -100,6 +100,58 @@ func TestMaterializerValidationAndUpdateOrder(t *testing.T) {
 	}
 }
 
+func TestMaterializerRollbackAndAtomicUpdate(t *testing.T) {
+	materializer, err := NewMaterializer(PrimaryKey("id"), Columns(materializerColumns), MaxRows(10))
+	if err != nil {
+		t.Fatalf("NewMaterializer() error = %v", err)
+	}
+	inserted := changeRow(flinksqlgateway.RowInsert, `1`, `"us"`, `"old"`)
+	before := changeRow(flinksqlgateway.RowUpdateBefore, `1`, `"us"`, `"old"`)
+	after := changeRow(flinksqlgateway.RowUpdateAfter, `1`, `"us"`, `"new"`)
+	if err := materializer.Apply(inserted); err != nil {
+		t.Fatalf("Apply(insert) error = %v", err)
+	}
+	if err := materializer.Apply(before); err != nil {
+		t.Fatalf("Apply(update before) error = %v", err)
+	}
+	if materializer.PendingUpdates() != 1 || materializer.RollbackPending() != 1 || materializer.PendingUpdates() != 0 {
+		t.Fatalf("pending updates were not rolled back")
+	}
+	if err := materializer.ApplyUpdate(before, after); err != nil {
+		t.Fatalf("ApplyUpdate() error = %v", err)
+	}
+	if got := materializer.Snapshot(); len(got) != 1 || string(got[0].Fields[2]) != `"new"` {
+		t.Fatalf("Snapshot() = %+v", got)
+	}
+}
+
+func TestMaterializerCanonicalKeyAndBoundedOrderIndex(t *testing.T) {
+	materializer, err := NewMaterializer(PrimaryKey("region"), Columns(materializerColumns), MaxRows(1))
+	if err != nil {
+		t.Fatalf("NewMaterializer() error = %v", err)
+	}
+	if err := materializer.Apply(changeRow(flinksqlgateway.RowInsert, `1`, `"\u0075s"`, `"value"`)); err != nil {
+		t.Fatalf("Apply(insert) error = %v", err)
+	}
+	if err := materializer.Apply(changeRow(flinksqlgateway.RowDelete, `1`, `"us"`, `"value"`)); err != nil {
+		t.Fatalf("Apply(delete canonical key) error = %v", err)
+	}
+	for index := 0; index < 3000; index++ {
+		key := json.RawMessage(`"key"`)
+		row := flinksqlgateway.Row{Kind: flinksqlgateway.RowInsert, Fields: []json.RawMessage{json.RawMessage(`1`), key, json.RawMessage(`"value"`)}}
+		if err := materializer.Apply(row); err != nil {
+			t.Fatalf("Apply(insert %d) error = %v", index, err)
+		}
+		row.Kind = flinksqlgateway.RowDelete
+		if err := materializer.Apply(row); err != nil {
+			t.Fatalf("Apply(delete %d) error = %v", index, err)
+		}
+	}
+	if len(materializer.order) > 1025 {
+		t.Fatalf("order index retained %d entries", len(materializer.order))
+	}
+}
+
 func changeRow(kind flinksqlgateway.RowKind, id, region, value string) flinksqlgateway.Row {
 	return flinksqlgateway.Row{
 		Kind: kind,

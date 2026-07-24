@@ -102,8 +102,8 @@ type OpenSessionRequest struct {
 	Properties  map[string]string `json:"properties,omitempty"`
 }
 
-// Session은 불투명한 Flink SQL Gateway session handle을 나타낸다. field는 변경되지 않아
-// 동시에 읽어도 안전하며 상태 변경 statement의 순서가 중요하면 호출자가 직렬화해야 한다.
+// Session은 불투명한 Flink SQL Gateway session의 반환 시점 snapshot이다. caller가 field나
+// Properties를 바꿔도 client 내부 상태에는 영향을 주지 않지만 같은 snapshot의 동시 변경은 동기화해야 한다.
 type Session struct {
 	Handle     string            `json:"sessionHandle"`
 	Name       string            `json:"-"`

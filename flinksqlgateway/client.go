@@ -63,19 +63,43 @@ type GatewayClient struct {
 	clientCloseOnce   sync.Once
 	clientCloseDone   chan struct{}
 	clientCloseErr    error
+	executions        *activityGroup
+	observerSlots     chan struct{}
 
 	versionMu      sync.Mutex
 	versionChecked bool
 	versionErr     error
 
 	stateMu      sync.Mutex
-	sessions     map[string]*Session
+	sessions     map[string]*sessionRecord
 	closed       map[string]struct{}
+	closedOrder  []string
 	closeCalls   map[string]*sessionCloseCall
 	heartbeats   map[string]*HeartbeatRunner
 	clientClosed bool
 	managed      map[*managedSession]struct{}
 	streams      map[*resultStream]struct{}
+}
+
+// sessionRecord는 공개 Session과 memory를 공유하지 않는 client 내부 session 상태이다.
+type sessionRecord struct {
+	handle     string
+	name       string
+	properties map[string]string
+	createdAt  time.Time
+}
+
+// snapshot은 호출자가 자유롭게 변경할 수 있는 공개 Session 복사본을 만든다.
+func (s *sessionRecord) snapshot() *Session {
+	if s == nil {
+		return nil
+	}
+	return &Session{
+		Handle:     s.handle,
+		Name:       s.name,
+		Properties: cloneMap(s.properties),
+		CreatedAt:  s.createdAt,
+	}
 }
 
 // 컴파일 시 GatewayClient가 공개 Client 계약을 모두 구현하는지 확인한다.
@@ -98,7 +122,9 @@ func NewClient(cfg Config) (*GatewayClient, error) {
 		lifecycleCtx:      lifecycleCtx,
 		lifecycleCancel:   lifecycleCancel,
 		clientCloseDone:   make(chan struct{}),
-		sessions:          make(map[string]*Session),
+		executions:        newActivityGroup(ErrClientClosed),
+		observerSlots:     make(chan struct{}, normalized.ObserverMaxInFlight),
+		sessions:          make(map[string]*sessionRecord),
 		closed:            make(map[string]struct{}),
 		closeCalls:        make(map[string]*sessionCloseCall),
 		heartbeats:        make(map[string]*HeartbeatRunner),
@@ -136,8 +162,8 @@ func (c *GatewayClient) sessionContext(handle string) SessionContext {
 	defer c.stateMu.Unlock()
 	context := SessionContext{Handle: handle}
 	if session := c.sessions[handle]; session != nil {
-		context.Name = session.Name
-		context.Properties = cloneMap(session.Properties)
+		context.Name = session.name
+		context.Properties = cloneMap(session.properties)
 	}
 	return context
 }

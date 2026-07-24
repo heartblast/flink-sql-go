@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ExecuteAndWait는 statement를 제출하고 server가 제공한 paging URI를 따라 MaxRows까지
@@ -14,6 +15,10 @@ func (c *GatewayClient) ExecuteAndWait(
 	statement string,
 	options ExecuteOptions,
 ) (*ExecutionResult, error) {
+	if err := c.executions.begin(); err != nil {
+		return nil, err
+	}
+	defer c.executions.end()
 	settings, err := c.executionSettings(options)
 	if err != nil {
 		return nil, err
@@ -37,9 +42,16 @@ func (c *GatewayClient) StreamResults(
 	}
 	events := make(chan ResultEvent, buffer)
 	errorsChannel := make(chan error, 1)
+	if err := c.executions.begin(); err != nil {
+		errorsChannel <- err
+		close(events)
+		close(errorsChannel)
+		return events, errorsChannel
+	}
 	streamCtx, cancel := mergeContext(ctx, c.lifecycleCtx)
 
 	go func() {
+		defer c.executions.end()
 		defer cancel()
 		defer close(events)
 		defer close(errorsChannel)
@@ -117,7 +129,7 @@ func (c *GatewayClient) runExecution(
 		return nil, err
 	}
 	if emit != nil {
-		if err := emit(ResultEvent{Type: ResultEventOperation, Operation: operation}); err != nil {
+		if err := emit(ResultEvent{Type: ResultEventOperation, Operation: cloneOperation(operation)}); err != nil {
 			return &ExecutionResult{Operation: operation}, c.cleanupOperation(operation, err)
 		}
 	}
@@ -155,7 +167,12 @@ func (c *GatewayClient) cleanupOperationContext(ctx context.Context, operation *
 	}
 	var cancelErr error
 	if errors.Is(reason, ErrResultLimit) || c.cfg.CancelOnContextDone && isContextError(reason) {
-		cancelErr = c.CancelOperation(ctx, operation.SessionHandle, operation.Handle)
+		cancelCtx, cancel := c.cancelStageContext(ctx)
+		cancelErr = c.CancelOperation(cancelCtx, operation.SessionHandle, operation.Handle)
+		cancel()
+		if errors.Is(cancelErr, ErrOperationNotFound) {
+			cancelErr = nil
+		}
 		c.observeLifecycle(ctx, Observation{Event: ObservationOperationCanceled, SessionHandle: operation.SessionHandle, OperationHandle: operation.Handle, Error: cancelErr})
 	}
 	closeErr := c.CloseOperation(ctx, operation.SessionHandle, operation.Handle)
@@ -170,4 +187,19 @@ func (c *GatewayClient) cleanupOperationContext(ctx context.Context, operation *
 		SessionHandle:   operation.SessionHandle,
 		OperationHandle: operation.Handle,
 	}
+}
+
+// cancelStageContext는 전체 cleanup deadline의 절반만 cancel에 배정해 close 실행 시간을 남긴다.
+func (c *GatewayClient) cancelStageContext(parent context.Context) (context.Context, context.CancelFunc) {
+	budget := c.cfg.RequestTimeout / 2
+	if deadline, ok := parent.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if half := remaining / 2; budget <= 0 || half < budget {
+			budget = half
+		}
+	}
+	if budget <= 0 {
+		budget = time.Nanosecond
+	}
+	return context.WithTimeout(parent, budget)
 }

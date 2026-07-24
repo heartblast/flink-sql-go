@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestClientLifecycleAndActualFlinkResultShape(t *testing.T) {
@@ -241,7 +242,7 @@ func TestRetryPolicyAndPOSTNoRetry(t *testing.T) {
 	}
 	_, err := client.ExecuteStatement(context.Background(), "s", ExecuteStatementRequest{Statement: "INSERT INTO sink SELECT * FROM source"})
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) || !apiErr.Retryable || statementCalls.Load() != 1 {
+	if !errors.Is(err, ErrExecutionOutcomeUnknown) || !errors.As(err, &apiErr) || apiErr.Retryable || statementCalls.Load() != 1 {
 		t.Fatalf("ExecuteStatement error = %v, calls = %d", err, statementCalls.Load())
 	}
 }
@@ -379,6 +380,17 @@ func TestNonJSONErrorIsSanitizedAndTyped(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Message != "public summary" || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("sanitized error = %#v / %v", apiErr, err)
+	}
+}
+
+func TestServerErrorMessageIsValidUTF8WithinLimit(t *testing.T) {
+	message := strings.Repeat("한🙂", maxExposedErrorBytes) + string([]byte{0xff, 0xfe})
+	sanitized := sanitizeServerMessage(message)
+	if !utf8.ValidString(sanitized) {
+		t.Fatalf("sanitizeServerMessage() returned invalid UTF-8")
+	}
+	if len(sanitized) > maxExposedErrorBytes+len("...") {
+		t.Fatalf("sanitizeServerMessage() bytes = %d", len(sanitized))
 	}
 }
 

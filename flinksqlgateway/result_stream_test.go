@@ -196,3 +196,49 @@ func TestExecutionErrorPreservesPrimaryAndCleanupFailures(t *testing.T) {
 		t.Fatalf("ExecutionError = %#v", executionErr)
 	}
 }
+
+func TestResultStreamSnapshotsCannotChangeInternalRoutesOrRows(t *testing.T) {
+	var fetchCalls atomic.Int32
+	var closeCalls atomic.Int32
+	server := executionServer(t, func(w http.ResponseWriter, r *http.Request) bool {
+		switch r.URL.Path {
+		case "/v3/sessions/s/operations/o/result/0":
+			fetchCalls.Add(1)
+			writeTestJSON(t, w, resultPageFixture("EOS", "", "", []map[string]any{{"kind": "INSERT", "fields": []any{1}}}))
+			return true
+		case "/v3/sessions/s/operations/o/close":
+			closeCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+			return true
+		}
+		return false
+	})
+	defer server.Close()
+	client := newTestClient(t, Config{BaseURL: server.URL})
+
+	stream, err := client.ExecuteStream(context.Background(), "s", "SELECT 1", StreamOptions{})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	operationEvent := stream.Event()
+	operationEvent.Operation.Handle = "changed"
+	if !stream.Next() {
+		t.Fatalf("Next() = false, error = %v", stream.Err())
+	}
+	row := stream.Row()
+	row.Fields[0][0] = '9'
+	rowEvent := stream.Event()
+	if string(rowEvent.Row.Fields[0]) != "1" {
+		t.Fatalf("Event row changed through Row() = %s", rowEvent.Row.Fields[0])
+	}
+	rowEvent.Row.Fields[0][0] = '8'
+	if got := stream.Row(); string(got.Fields[0]) != "1" {
+		t.Fatalf("Row() changed through Event() = %s", got.Fields[0])
+	}
+	if stream.Next() || stream.Err() != nil {
+		t.Fatalf("final Next/Err = true, %v", stream.Err())
+	}
+	if fetchCalls.Load() != 1 || closeCalls.Load() != 1 {
+		t.Fatalf("fetch=%d close=%d", fetchCalls.Load(), closeCalls.Load())
+	}
+}

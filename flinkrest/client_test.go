@@ -7,8 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 )
 
 const testJobID = "0123456789abcdef0123456789abcdef"
@@ -114,6 +117,21 @@ func TestClientValidationLimitsAndClose(t *testing.T) {
 	}
 	if _, err := client.GetJobStatus(context.Background(), testJobID); !errors.Is(err, ErrClientClosed) {
 		t.Fatalf("request after Close error = %v", err)
+	}
+}
+
+func TestAPIErrorMessageIsValidUTF8WithinLimit(t *testing.T) {
+	target, err := url.Parse("https://flink.example/jobs/test")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	data := append([]byte(strings.Repeat("오류🙂", maxExposedErrorBytes)), 0xff, 0xfe)
+	apiErr := decodeAPIError(http.MethodGet, target, http.StatusInternalServerError, data)
+	if !utf8.ValidString(apiErr.Message) {
+		t.Fatalf("decodeAPIError() returned invalid UTF-8")
+	}
+	if len(apiErr.Message) > maxExposedErrorBytes+len("...") {
+		t.Fatalf("decodeAPIError() bytes = %d", len(apiErr.Message))
 	}
 }
 

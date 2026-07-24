@@ -50,8 +50,8 @@ func (c *GatewayClient) StartHeartbeat(ctx context.Context, sessionHandle string
 
 // startHeartbeat는 주기와 jitter를 검증하고 session별 단일 runner를 등록한다.
 func (c *GatewayClient) startHeartbeat(ctx context.Context, sessionHandle string, interval, jitter time.Duration) (*HeartbeatRunner, error) {
-	if sessionHandle == "" {
-		return nil, fmt.Errorf("flinksqlgateway: session handle is required")
+	if err := validateSessionHandle(sessionHandle); err != nil {
+		return nil, err
 	}
 	if err := c.ensureOpen(ctx); err != nil {
 		return nil, err
@@ -120,7 +120,7 @@ func (c *GatewayClient) runHeartbeat(ctx context.Context, sessionHandle string, 
 		case runner.errors <- err:
 		default:
 		}
-		if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrSessionExpired) || isContextError(err) {
+		if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrSessionExpired) {
 			return
 		}
 	}

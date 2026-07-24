@@ -43,6 +43,7 @@ func (c *GatewayClient) Close() error {
 	c.clientCloseOnce.Do(func() {
 		c.stateMu.Lock()
 		c.clientClosed = true
+		c.executions.stop()
 		streams := make([]*resultStream, 0, len(c.streams))
 		for stream := range c.streams {
 			streams = append(streams, stream)
@@ -82,6 +83,11 @@ func (c *GatewayClient) Close() error {
 		for _, runner := range runners {
 			runner.Stop()
 		}
+		executionCtx, executionCancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		if err := c.executions.wait(executionCtx); err != nil {
+			closeErrors = append(closeErrors, err)
+		}
+		executionCancel()
 		if c.ownsHTTPTransport {
 			c.httpClient.CloseIdleConnections()
 		}
@@ -140,6 +146,29 @@ func (c *GatewayClient) observeLifecycle(ctx context.Context, observation Observ
 	if observation.Timestamp.IsZero() {
 		observation.Timestamp = time.Now()
 	}
-	defer func() { _ = recover() }()
-	observer.ObserveLifecycle(ctx, observation)
+	c.runObserver(func() { observer.ObserveLifecycle(ctx, observation) })
+}
+
+// runObserver는 느리거나 멈춘 callback이 client 핵심 경로를 무기한 막지 않도록 실행을 제한한다.
+func (c *GatewayClient) runObserver(callback func()) {
+	select {
+	case c.observerSlots <- struct{}{}:
+	default:
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer func() {
+			_ = recover()
+			<-c.observerSlots
+			close(done)
+		}()
+		callback()
+	}()
+	timer := time.NewTimer(c.cfg.ObserverTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }

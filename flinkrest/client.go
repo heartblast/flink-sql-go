@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // maxExposedErrorBytes는 API 오류에 노출할 서버 메시지의 최대 byte 수이다.
@@ -252,11 +253,16 @@ func decodeAPIError(method string, target *url.URL, status int, data []byte) *AP
 		message = string(data)
 	}
 	message = strings.TrimSpace(message)
+	message = strings.ToValidUTF8(message, "�")
 	if newline := strings.IndexAny(message, "\r\n"); newline >= 0 {
 		message = message[:newline]
 	}
 	if len(message) > maxExposedErrorBytes {
-		message = message[:maxExposedErrorBytes] + "..."
+		limit := maxExposedErrorBytes
+		for limit > 0 && !utf8.ValidString(message[:limit]) {
+			limit--
+		}
+		message = message[:limit] + "..."
 	}
 	return &APIError{Method: method, Endpoint: target.EscapedPath(), StatusCode: status, Message: message}
 }

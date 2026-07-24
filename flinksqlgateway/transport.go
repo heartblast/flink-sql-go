@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // maxExposedErrorBytes는 server 오류에서 첫 줄만 노출할 때 허용하는 최대 byte 수이다.
@@ -108,6 +109,12 @@ func (c *GatewayClient) doJSON(
 			return n, nil
 		}
 		lastErr = requestErr
+		if !safeRetry {
+			var apiErr *APIError
+			if errors.As(requestErr, &apiErr) {
+				apiErr.Retryable = false
+			}
+		}
 		if !retry || !safeRetry {
 			return n, requestErr
 		}
@@ -201,6 +208,7 @@ func (c *GatewayClient) doJSONOnce(
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		apiErr := c.decodeAPIError(method, target, resp.StatusCode, data)
+		apiErr.RequestPhase = ResponseReceived
 		c.observe(ctx, RequestObservation{Method: method, Endpoint: endpoint, StatusCode: resp.StatusCode, Duration: time.Since(started), Err: apiErr})
 		return responseBytes, apiErr.Retryable, apiErr
 	}
@@ -321,12 +329,17 @@ func (c *GatewayClient) knownSessionInPath(endpointPath string) bool {
 
 // sanitizeServerMessage는 stack trace를 제거하고 노출 가능한 첫 줄의 크기를 제한한다.
 func sanitizeServerMessage(message string) string {
+	message = strings.ToValidUTF8(message, "�")
 	message = strings.TrimSpace(message)
 	if index := strings.IndexAny(message, "\r\n"); index >= 0 {
 		message = message[:index]
 	}
 	if len(message) > maxExposedErrorBytes {
-		message = message[:maxExposedErrorBytes] + "..."
+		limit := maxExposedErrorBytes
+		for limit > 0 && !utf8.ValidString(message[:limit]) {
+			limit--
+		}
+		message = message[:limit] + "..."
 	}
 	return message
 }
@@ -336,8 +349,7 @@ func (c *GatewayClient) observe(ctx context.Context, observation RequestObservat
 	if c.cfg.Observer == nil {
 		return
 	}
-	defer func() { _ = recover() }()
-	c.cfg.Observer.ObserveRequest(ctx, observation)
+	c.runObserver(func() { c.cfg.Observer.ObserveRequest(ctx, observation) })
 }
 
 // waitContext는 timer를 누수하지 않고 지정 시간 또는 context 취소까지 기다린다.

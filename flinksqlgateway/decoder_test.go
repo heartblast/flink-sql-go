@@ -112,6 +112,37 @@ func TestDefaultValueDecoderNestedTypes(t *testing.T) {
 	}
 }
 
+func TestRowAccessorDeepCopiesSchemaAndPreservesUnknownNestedFields(t *testing.T) {
+	integer := &LogicalType{Type: "INTEGER", Raw: json.RawMessage(`{"type":"INTEGER"}`)}
+	columns := []ColumnInfo{{
+		Name: "nested",
+		LogicalType: LogicalType{Type: "ROW", Fields: []LogicalTypeField{
+			{Name: "id", LogicalType: integer},
+		}},
+	}}
+	row := Row{Kind: RowInsert, Fields: []json.RawMessage{json.RawMessage(`{"id":7,"future":{"x":1}}`)}}
+	accessor := row.WithColumns(columns, nil)
+
+	columns[0].Name = "changed"
+	columns[0].LogicalType.Fields[0].Name = "changed"
+	integer.Type = "STRING"
+	integer.Raw[2] = 'X'
+	row.Fields[0][2] = 'X'
+
+	value, null, err := accessor.Value("nested")
+	if err != nil || null {
+		t.Fatalf("Value() = %#v, %v, %v", value, null, err)
+	}
+	nested, ok := value.(map[string]any)
+	if !ok || nested["id"] != int64(7) {
+		t.Fatalf("nested value = %#v", value)
+	}
+	unknown, ok := nested["future"].(json.RawMessage)
+	if !ok || string(unknown) != `{"x":1}` {
+		t.Fatalf("unknown field = %#v", nested["future"])
+	}
+}
+
 func TestRowHelpersSupportNamesIndexesDuplicatesAndNull(t *testing.T) {
 	columns := []ColumnInfo{
 		{Name: "name", LogicalType: LogicalType{Type: "STRING"}},
