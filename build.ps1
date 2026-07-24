@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Version,
+    [string]$FlinkVersion,
     [string]$OutputDirectory = "dist",
     [string]$VulnerabilityDatabase = "https://vuln.go.dev",
     [switch]$Release,
@@ -104,11 +105,23 @@ try {
     $BaseVersion = (Get-Content -Raw -LiteralPath "VERSION").Trim()
     Assert-SemVer $BaseVersion
 
+    $DefaultFlinkVersion = (Get-Content -Raw -LiteralPath "FLINK_VERSION").Trim()
+    Assert-SemVer $DefaultFlinkVersion
+    $FlinkVersionSource = "FLINK_VERSION"
+    if (-not [string]::IsNullOrWhiteSpace($FlinkVersion)) {
+        $ResolvedFlinkVersion = $FlinkVersion.Trim().TrimStart('v')
+        $FlinkVersionSource = "parameter"
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:SUPPORTED_FLINK_VERSION)) {
+        $ResolvedFlinkVersion = $env:SUPPORTED_FLINK_VERSION.Trim().TrimStart('v')
+        $FlinkVersionSource = "SUPPORTED_FLINK_VERSION"
+    } else {
+        $ResolvedFlinkVersion = $DefaultFlinkVersion
+    }
+    Assert-SemVer $ResolvedFlinkVersion
+
     $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
     $HasCommit = $false
     $Commit = "uncommitted"
-    $ShortCommit = "nogit"
-    $CommitCount = 0
     $ExactTag = ""
     $Dirty = $true
 
@@ -119,14 +132,6 @@ try {
             $HasCommit = $LASTEXITCODE -eq 0
             if ($HasCommit) {
                 $Commit = "$commitOutput".Trim()
-                $ShortCommit = (& git rev-parse --short=12 HEAD).Trim()
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Unable to resolve the short Git commit."
-                }
-                $CommitCount = [int]((& git rev-list --count HEAD).Trim())
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Unable to count Git commits."
-                }
                 $tagOutput = @(& git tag --points-at HEAD --list "v[0-9]*")
                 if ($LASTEXITCODE -ne 0) {
                     throw "Unable to inspect Git tags."
@@ -154,7 +159,7 @@ try {
         $ResolvedVersion = $ExactTag.TrimStart('v')
         $VersionSource = "git-tag"
     } else {
-        $ResolvedVersion = "$BaseVersion-dev.$CommitCount+$ShortCommit"
+        $ResolvedVersion = $BaseVersion
     }
     Assert-SemVer $ResolvedVersion
 
@@ -173,7 +178,7 @@ try {
     New-Item -ItemType Directory -Path $DistDirectory -Force | Out-Null
 
     $ArtifactVersion = $ResolvedVersion
-    $ArtifactBaseName = "flink-sql-go-$ArtifactVersion"
+    $ArtifactBaseName = "flink-sql-go-$ArtifactVersion-flink-$ResolvedFlinkVersion"
     $ReachableReport = Join-Path $DistDirectory "$ArtifactBaseName.govulncheck.txt"
     $ModuleReport = Join-Path $DistDirectory "$ArtifactBaseName.govulncheck-modules.txt"
     $CoverageReport = Join-Path $DistDirectory "$ArtifactBaseName.coverage.out"
@@ -190,12 +195,14 @@ try {
     }
     $LinkerFlags = @(
         "-X $ModulePath/flinksqlgateway.buildVersion=$ResolvedVersion",
+        "-X $ModulePath/flinksqlgateway.buildFlinkVersion=$ResolvedFlinkVersion",
         "-X $ModulePath/flinksqlgateway.buildCommit=$Commit",
         "-X $ModulePath/flinksqlgateway.buildDate=$BuildDate",
         "-X $ModulePath/flinksqlgateway.buildDirty=$DirtyText"
     ) -join ' '
 
     Write-Host "==> Build version: $ResolvedVersion ($VersionSource)"
+    Write-Host "==> Supported Flink: $ResolvedFlinkVersion ($FlinkVersionSource)"
     Write-Host "==> Go toolchain: $ActualGoVersion"
     Write-Host "==> Verifying module checksums"
     Invoke-Checked go mod verify
@@ -258,11 +265,14 @@ try {
         throw "Unable to determine govulncheck version."
     }
     $BuildInfo = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         module = $ModulePath
         version = $ResolvedVersion
         versionSource = $VersionSource
         sourceVersion = $BaseVersion
+        supportedFlinkVersion = $ResolvedFlinkVersion
+        flinkVersionSource = $FlinkVersionSource
+        artifactBaseName = $ArtifactBaseName
         commit = $Commit
         dirty = $Dirty
         buildDate = $BuildDate
@@ -278,6 +288,7 @@ try {
     $ArchiveItems = @(
         ".gitignore",
         "VERSION",
+        "FLINK_VERSION",
         "README.md",
         "build.ps1",
         "go.mod",
@@ -306,11 +317,12 @@ try {
 
     Write-Host ""
     Write-Host "Build completed successfully."
-    Write-Host "Version:  $ResolvedVersion"
-    Write-Host "Archive:  $ArchivePath"
-    Write-Host "Checksums: $ChecksumPath"
-    Write-Host "Security:  $ReachableReport"
-    Write-Host "           $ModuleReport"
+    Write-Host "Version:         $ResolvedVersion"
+    Write-Host "Supported Flink: $ResolvedFlinkVersion"
+    Write-Host "Archive:         $ArchivePath"
+    Write-Host "Checksums:        $ChecksumPath"
+    Write-Host "Security:         $ReachableReport"
+    Write-Host "                  $ModuleReport"
 } finally {
     Pop-Location
 }

@@ -16,25 +16,34 @@ go tool govulncheck -version
 
 ## 버전 규칙
 
-기준 release line은 루트 `VERSION`과 `flinksqlgateway.SourceVersion`에 함께 기록되며 테스트가 두 값을 비교한다.
+기준 release line은 루트 `VERSION`과 `flinksqlgateway.SourceVersion`에 함께 기록되며 테스트가 두 값을 비교한다. 지원 Flink release는 `FLINK_VERSION`과 `flinksqlgateway.SupportedFlinkVersion`에 기록한다.
 
 빌드 version 우선순위:
 
 1. `-Version 1.2.3`
 2. `$env:BUILD_VERSION`
 3. 현재 HEAD를 가리키는 `v1.2.3` 형식 tag
-4. `VERSION` + `-dev.<commit-count>+<short-commit>`
+4. `VERSION`
 
-최초 commit 전에는 `0.1.0-dev.0+nogit` 형태가 된다. 모든 version은 SemVer 2.0.0 검증을 통과해야 한다.
+기본 빌드도 `VERSION`의 안정 버전(현재 `0.1.0`)을 사용하고 `-dev`를 자동 추가하지 않는다. commit과 dirty 여부는 build-info에서 추적한다. 모든 version은 SemVer 2.0.0 검증을 통과해야 한다.
+
+지원 Flink version 우선순위:
+
+1. `-FlinkVersion 1.20.4`
+2. `$env:SUPPORTED_FLINK_VERSION`
+3. 루트 `FLINK_VERSION`
+
+배포 산출물에는 `-flink-<version>` suffix가 붙는다. 예: `flink-sql-go-0.1.0-flink-1.20.4-source.zip`.
 
 빌드 중 다음 linker metadata가 주입된다.
 
 - `flinksqlgateway.Version()`
+- `flinksqlgateway.GetBuildInfo().FlinkVersion`
 - `flinksqlgateway.GetBuildInfo().Commit`
 - RFC 3339 build time
 - dirty worktree 여부
 
-라이브러리 source를 빌드 스크립트 밖에서 직접 compile하면 `SourceVersion-dev`와 unknown build metadata가 반환된다. Go module의 공개 release version은 Git tag가 최종 기준이다.
+라이브러리 source를 빌드 스크립트 밖에서 직접 compile해도 `SourceVersion`과 `SupportedFlinkVersion`이 반환되며 `-dev`는 붙지 않는다. commit/date는 unknown 상태다. Go module의 공개 release version은 Git tag가 최종 기준이다.
 
 ## 릴리스 정책
 
@@ -87,12 +96,12 @@ Go 1.26.4에서 다음 표준 라이브러리 취약점이 검출되어 프로�
 
 ## 산출물
 
-`dist/flink-sql-go-<version>*` 이름으로 생성된다.
+`dist/flink-sql-go-<version>-flink-<flink-version>*` 이름으로 생성된다.
 
 | 파일 | 내용 |
 | --- | --- |
 | `*-source.zip` | source와 build-info |
-| `*.build-info.json` | version, commit, toolchain, security gate 결과 |
+| `*.build-info.json` | version, 지원 Flink version, commit, toolchain, security gate 결과 |
 | `*.modules.txt` | 선택된 module version과 checksum |
 | `*.govulncheck.txt` | symbol-level 결과 |
 | `*.govulncheck-modules.txt` | module-level 결과 |

@@ -23,17 +23,20 @@ PowerShell 5.1 이상에서 루트 빌드 스크립트를 실행합니다.
 스크립트는 다음 순서로 실행됩니다.
 
 1. `go.mod`에 선언된 Go 버전과 실제 toolchain 일치 확인
-2. Git tag/commit과 `VERSION`을 이용한 SemVer 산정
+2. Git tag와 `VERSION`을 이용한 안정 SemVer 및 `FLINK_VERSION` 확인
 3. `go mod verify`, `go mod tidy -diff`, `gofmt`, `go vet`
 4. 단위 테스트와 coverage, 전체 package compile
 5. `govulncheck` symbol scan 및 전체 module graph scan
-6. 버전이 포함된 소스 ZIP, build-info, 의존성 목록, SHA-256 생성
+6. 라이브러리/Flink 버전 suffix가 포함된 소스 ZIP, build-info, 의존성 목록, SHA-256 생성
 
-버전 결정 우선순위는 `-Version`, `BUILD_VERSION`, 현재 commit의 정확한 `v*` tag, `VERSION` 기반 개발 버전 순입니다.
+라이브러리 버전 결정 우선순위는 `-Version`, `BUILD_VERSION`, 현재 commit의 정확한 `v*` tag, `VERSION` 순입니다. 기본 빌드는 `-dev`를 붙이지 않으며 현재 기준 산출물 이름은 `flink-sql-go-0.1.0-flink-1.20.4-*`입니다. Git commit과 dirty 상태는 버전 문자열 대신 build-info에 기록됩니다.
 
 ```powershell
-# 명시적 개발 빌드
+# 명시적 preview 버전
 .\build.ps1 -Version 0.1.0-rc.1
+
+# 다른 Flink patch release용 별도 검증 빌드
+.\build.ps1 -FlinkVersion 1.20.5
 
 # 깨끗한 worktree와 tag/명시 버전을 요구하는 릴리스 빌드
 .\build.ps1 -Release
@@ -42,9 +45,13 @@ PowerShell 5.1 이상에서 루트 빌드 스크립트를 실행합니다.
 .\build.ps1 -Race
 ```
 
+기본 지원 Flink 버전은 루트 `FLINK_VERSION`에서 관리합니다. CI에서는 `SUPPORTED_FLINK_VERSION` 환경변수로 덮어쓸 수도 있습니다.
+
 기본 보안 gate는 취약점 또는 scan 오류가 하나라도 있으면 빌드를 실패시킵니다. 조사 목적으로만 비릴리스 빌드에 `-AllowVulnerabilities`를 사용할 수 있으며, 결과 manifest의 `securityGatePassed`는 `false`로 기록됩니다. 릴리스 빌드에서는 이 우회를 허용하지 않습니다.
 
 Go 1.26.5에는 이전 빌드에서 검출된 표준 라이브러리 취약점 `GO-2026-5856`, `GO-2026-4970`의 수정이 포함됩니다. 상세한 빌드·배포 절차는 [docs/build.md](docs/build.md)를 참고하십시오.
+
+`v0.1.0`의 기능, 호환성, 검증 결과와 공개 전 확인사항은 [릴리스 노트](docs/releases/v0.1.0.md)에 정리되어 있습니다.
 
 ## 주요 기능
 
