@@ -29,7 +29,8 @@ const (
 )
 
 // Config는 Flink SQL Gateway client의 연결, 실행과 자원 제한을 설정한다.
-// 시간 값은 time.Duration을 사용하며 ExecutionTimeout은 millisecond로 Flink에 전송한다.
+// 시간 값은 time.Duration을 사용하며 ExecutionTimeout은 고수준 실행의 전체 client-side
+// 제한 시간으로 적용한다. Flink 1.20.4가 지원하지 않는 REST executionTimeout으로 전송하지 않는다.
 type Config struct {
 	BaseURL    string
 	APIVersion string

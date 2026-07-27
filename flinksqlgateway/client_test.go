@@ -41,10 +41,10 @@ func TestClientLifecycleAndActualFlinkResultShape(t *testing.T) {
 		case r.URL.Path == "/v3/sessions/session-1/configure-session" && r.Method == http.MethodPost:
 			var body struct {
 				Statement        string `json:"statement"`
-				ExecutionTimeout int64  `json:"executionTimeout"`
+				ExecutionTimeout *int64 `json:"executionTimeout"`
 			}
 			decodeTestJSON(t, r, &body)
-			if body.Statement != "USE CATALOG cat" || body.ExecutionTimeout != 2_000 {
+			if body.Statement != "USE CATALOG cat" || body.ExecutionTimeout != nil {
 				t.Errorf("configure body = %+v", body)
 			}
 			w.WriteHeader(http.StatusOK)
@@ -58,10 +58,10 @@ func TestClientLifecycleAndActualFlinkResultShape(t *testing.T) {
 		case r.URL.Path == "/v3/sessions/session-1/statements" && r.Method == http.MethodPost:
 			var body struct {
 				Statement        string `json:"statement"`
-				ExecutionTimeout int64  `json:"executionTimeout"`
+				ExecutionTimeout *int64 `json:"executionTimeout"`
 			}
 			decodeTestJSON(t, r, &body)
-			if body.Statement != "SHOW TABLES" || body.ExecutionTimeout != 30_000 {
+			if body.Statement != "SHOW TABLES" || body.ExecutionTimeout != nil {
 				t.Errorf("execute body = %+v", body)
 			}
 			writeTestJSON(t, w, map[string]any{"operationHandle": "operation-1"})

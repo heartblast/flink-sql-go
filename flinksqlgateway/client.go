@@ -22,7 +22,8 @@ type Client interface {
 	OpenSession(ctx context.Context, req OpenSessionRequest) (*Session, error)
 	// GetSessionConfig는 현재 session property를 조회한다.
 	GetSessionConfig(ctx context.Context, sessionHandle string) (map[string]string, error)
-	// ConfigureSession은 v2 이상 session에 설정 statement를 적용한다.
+	// ConfigureSession은 v2 이상 session에 설정 statement를 적용하며 executionTimeout을
+	// client-side 제한으로 사용한다.
 	ConfigureSession(ctx context.Context, sessionHandle, statement string, executionTimeout time.Duration) error
 	// CompleteStatement는 v2 이상에서 SQL 자동완성 후보를 조회한다.
 	CompleteStatement(ctx context.Context, sessionHandle, statement string, position int) ([]string, error)

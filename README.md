@@ -363,6 +363,8 @@ OpenAPI는 결과 body 일부를 `any`로 표시하고 `queryResult`라고 기�
 
 세션 생성, SQL 실행, 세션 구성 SQL, Operation 취소/종료, 세션 종료는 자동 재시도하지 않습니다. 특히 SQL 실행 POST는 응답 유실 시 이미 Job이 제출됐을 수 있으므로 절대 자동 재호출하지 않습니다. 이 경우 `errors.Is(err, flinksqlgateway.ErrExecutionOutcomeUnknown)` 또는 `errors.As`로 상태를 판별할 수 있습니다.
 
+`ExecutionTimeout`은 제출부터 결과 수집까지의 client-side 제한입니다. Flink 1.20.4는 SQL Gateway REST 요청의 양수 `executionTimeout`을 지원하지 않으므로 client는 해당 wire field를 생략하고 context로 제한 시간을 적용합니다.
+
 Operation handle을 받은 뒤 context가 취소되면 `CancelOnContextDone` 설정에 따라 별도 cleanup context로 취소를 요청하고, 원래 context 오류를 그대로 반환합니다. 결과 제한 도달 시에는 취소 후 Operation을 닫습니다. 세션 만료 시 새 세션을 몰래 생성하지 않습니다.
 
 ## 보안과 동시성

@@ -2,6 +2,7 @@ package flinksqlgateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestExecuteStatementOutcomeUnknownWhenResponseHeaderIsMissing(t *testing.T) {
@@ -67,6 +69,35 @@ func TestExecuteStatementPreSendFailureIsNotOutcomeUnknown(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.RequestPhase != RequestNotSent {
 		t.Fatalf("API error = %#v", apiErr)
+	}
+}
+
+func TestExecuteStatementOmitsUnsupportedFlink120ExecutionTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api_versions":
+			writeTestJSON(t, w, map[string]any{"versions": []string{"V3"}})
+		case "/v3/sessions/s/statements":
+			var body map[string]json.RawMessage
+			decodeTestJSON(t, r, &body)
+			if _, exists := body["executionTimeout"]; exists {
+				http.Error(w, "SqlGatewayService doesn't support timeout mechanism now.", http.StatusInternalServerError)
+				return
+			}
+			writeTestJSON(t, w, map[string]string{"operationHandle": "o"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, Config{BaseURL: server.URL, ExecutionTimeout: 30 * time.Second})
+	operation, err := client.ExecuteStatement(context.Background(), "s", ExecuteStatementRequest{
+		Statement:        "SELECT 1",
+		ExecutionTimeout: time.Minute,
+	})
+	if err != nil || operation == nil || operation.Handle != "o" {
+		t.Fatalf("ExecuteStatement() = %+v, %v", operation, err)
 	}
 }
 

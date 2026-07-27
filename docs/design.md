@@ -64,7 +64,7 @@ poll interval은 `PollInterval`에서 시작해 2배로 증가하고 `MaxPollInt
 ## context와 cleanup
 
 - 모든 HTTP request는 호출자 context와 `RequestTimeout`을 함께 적용한다.
-- 고수준 실행은 `ExecutionTimeout`으로 전체 제출/polling 시간을 제한한다.
+- 고수준 실행은 client-side `ExecutionTimeout`으로 전체 제출/polling 시간을 제한한다. Flink 1.20.4는 REST 요청의 양수 `executionTimeout`을 지원하지 않으므로 이 field는 전송하지 않는다.
 - context 취소 또는 결과 제한 뒤 cleanup은 이미 취소된 context가 아닌 짧은 background context를 사용한다.
 - `CancelOnContextDone`이 true이면 context 취소 시 Operation cancel을 시도한다.
 - cancel/close 실패가 원래 context 또는 result-limit 오류를 덮지 않는다.

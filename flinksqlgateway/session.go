@@ -106,6 +106,7 @@ func (c *GatewayClient) GetSessionConfig(ctx context.Context, sessionHandle stri
 }
 
 // ConfigureSession은 v2 이상에서 session 설정 statement를 실행하며 POST를 자동 재시도하지 않는다.
+// executionTimeout은 Flink 1.20.4가 지원하지 않는 wire field 대신 client-side context 제한으로 적용한다.
 func (c *GatewayClient) ConfigureSession(ctx context.Context, sessionHandle, statement string, executionTimeout time.Duration) error {
 	if err := validateSessionHandle(sessionHandle); err != nil {
 		return err
@@ -122,12 +123,19 @@ func (c *GatewayClient) ConfigureSession(ctx context.Context, sessionHandle, sta
 	if executionTimeout <= 0 {
 		executionTimeout = c.cfg.ExecutionTimeout
 	}
+	requestCtx := ctx
+	cancel := func() {}
+	if executionTimeout > 0 {
+		requestCtx, cancel = context.WithTimeout(ctx, executionTimeout)
+	}
+	defer cancel()
+
+	// Flink 1.20.4는 양수 executionTimeout을 지원하지 않으므로 field 자체를 생략한다.
 	body := struct {
-		Statement        string `json:"statement"`
-		ExecutionTimeout int64  `json:"executionTimeout"`
-	}{statement, executionTimeout.Milliseconds()}
+		Statement string `json:"statement"`
+	}{statement}
 	target, _ := c.endpointURL(true, "/sessions/"+pathSegment(sessionHandle)+"/configure-session")
-	_, err := c.doJSON(ctx, http.MethodPost, target, body, nil, false)
+	_, err := c.doJSON(requestCtx, http.MethodPost, target, body, nil, false)
 	return err
 }
 

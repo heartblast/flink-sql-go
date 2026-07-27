@@ -22,15 +22,12 @@ func (c *GatewayClient) ExecuteStatement(ctx context.Context, sessionHandle stri
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return nil, err
 	}
-	timeout := req.ExecutionTimeout
-	if timeout <= 0 {
-		timeout = c.cfg.ExecutionTimeout
-	}
+	// Flink 1.20.4는 executionTimeout이 양수이면 statement를 제출하기 전에
+	// UnsupportedOperationException을 반환한다. 전체 실행 제한은 상위 context에서 적용한다.
 	body := struct {
-		Statement        string            `json:"statement"`
-		ExecutionTimeout int64             `json:"executionTimeout"`
-		ExecutionConfig  map[string]string `json:"executionConfig,omitempty"`
-	}{req.Statement, timeout.Milliseconds(), req.ExecutionConfig}
+		Statement       string            `json:"statement"`
+		ExecutionConfig map[string]string `json:"executionConfig,omitempty"`
+	}{req.Statement, req.ExecutionConfig}
 	target, _ := c.endpointURL(true, "/sessions/"+pathSegment(sessionHandle)+"/statements")
 	endpoint := sanitizeEndpointPath(target.EscapedPath())
 	c.observeLifecycle(ctx, Observation{
