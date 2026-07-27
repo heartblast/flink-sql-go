@@ -77,6 +77,7 @@ type resultStream struct {
 	currentEvent ResultEvent
 	currentRow   Row
 	jobID        string
+	columns      []ColumnInfo
 	rowsYielded  int
 	polls        int
 	interval     time.Duration
@@ -164,6 +165,13 @@ func (s *resultStream) Next() bool {
 			s.pendingRows = nil
 			s.pendingIndex = 0
 			if page.Results != nil {
+				if len(s.columns) == 0 && len(page.Results.Columns) > 0 {
+					s.columns = cloneColumns(page.Results.Columns)
+				}
+				if err := validateResultRows(s.columns, page.Results.Data); err != nil {
+					s.finishFromNext(err, false)
+					return false
+				}
 				s.pendingRows = page.Results.Data
 			}
 			s.pendingEOS = page.ResultType == ResultEOS

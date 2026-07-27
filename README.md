@@ -248,18 +248,31 @@ defer client.CloseSession(context.Background(), replay.SessionHandle)
 
 ## 타입 Decoder와 Row helper
 
-기본 `Row.Fields`는 계속 `json.RawMessage`입니다. 변환은 명시적으로 helper를 호출할 때만 수행됩니다.
+`ExecutionResult.Columns`는 이름과 논리 타입을 담는 schema metadata이며 실제 SELECT 값은
+`ExecutionResult.Rows[*].Fields`에 있습니다. `LogicalType.Nullable`은 해당 타입이 NULL을 허용한다는
+뜻이지 현재 행의 값이 NULL이라는 뜻이 아닙니다. 기본 `Row.Fields`는 계속 `json.RawMessage`이며
+변환은 명시적으로 helper를 호출할 때만 수행됩니다.
 
 ```go
 decoded := row.WithColumns(result.Columns, nil) // nil은 DefaultValueDecoder 사용
 name, isNull, err := decoded.String("service_name")
+if err != nil {
+    return err // 누락 field나 decoding 오류를 NULL로 처리하지 않습니다.
+}
+if isNull {
+    // JSON literal null인 실제 SQL NULL입니다.
+}
 code, _, err := decoded.Int64("status_code")
 amount, _, err := decoded.Decimal("amount") // 정확한 문자열 기반 Decimal
 eventTime, _, err := decoded.Time("event_time")
 raw, _, err := decoded.Raw("future_type")
 ```
 
-컬럼명과 인덱스 접근을 모두 지원합니다. 중복 컬럼명은 첫 번째 컬럼을 선택하고, SQL NULL은 별도 `isNull` 값으로 구분합니다. `TIMESTAMP`는 `LocalTimestamp`, `TIMESTAMP_LTZ`는 `TimestampLTZ`로 의미를 구분하며 알 수 없는 미래 타입은 raw JSON으로 반환합니다.
+컬럼명과 인덱스 접근을 모두 지원합니다. 중복 컬럼명은 첫 번째 컬럼을 선택하고, JSON literal
+`null`인 SQL NULL만 별도 `isNull` 값으로 구분합니다. 컬럼/field 개수가 다르거나 field가 비어
+있으면 결과 수집 또는 accessor가 오류를 반환합니다. `TIMESTAMP`는 `LocalTimestamp`,
+`TIMESTAMP_LTZ`는 `TimestampLTZ`로 의미를 구분하며 알 수 없는 미래 타입은 raw JSON으로
+반환합니다.
 
 ## Metadata와 Capability
 

@@ -70,8 +70,13 @@ func (c *GatewayClient) consumeResults(
 			if page.JobID != "" {
 				result.JobID = page.JobID
 			}
-			if page.Results != nil && len(result.Columns) == 0 {
-				result.Columns = cloneColumns(page.Results.Columns)
+			if page.Results != nil {
+				if len(result.Columns) == 0 && len(page.Results.Columns) > 0 {
+					result.Columns = cloneColumns(page.Results.Columns)
+				}
+				if err := validateResultRows(result.Columns, page.Results.Data); err != nil {
+					return result, err
+				}
 			}
 
 			if emit != nil {
@@ -123,6 +128,32 @@ func (c *GatewayClient) consumeResults(
 			return result, fmt.Errorf("flinksqlgateway: unknown resultType %q", page.ResultType)
 		}
 	}
+}
+
+// validateResultRows는 실제 JSON null만 SQL NULL로 통과시키고 schema와 맞지 않는 행은 즉시 거부한다.
+func validateResultRows(columns []ColumnInfo, rows []Row) error {
+	for rowIndex := range rows {
+		row := rows[rowIndex]
+		if len(row.Fields) != len(columns) {
+			return fmt.Errorf(
+				"flinksqlgateway: result row %d has %d fields for %d columns",
+				rowIndex,
+				len(row.Fields),
+				len(columns),
+			)
+		}
+		for fieldIndex := range row.Fields {
+			if err := validateRawJSONField(row.Fields[fieldIndex]); err != nil {
+				return fmt.Errorf(
+					"flinksqlgateway: result row %d column %d has an invalid field: %w",
+					rowIndex,
+					fieldIndex,
+					err,
+				)
+			}
+		}
+	}
+	return nil
 }
 
 // pageWithoutRows는 stream page event가 row 전체를 중복 보관하지 않도록 metadata만 복사한다.

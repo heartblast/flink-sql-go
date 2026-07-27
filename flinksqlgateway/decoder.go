@@ -53,7 +53,10 @@ type TimestampLTZ struct {
 // Decode는 ValueDecoder를 구현하며 알 수 없는 논리 타입의 원본 JSON을 그대로 보존한다.
 func (DefaultValueDecoder) Decode(column Column, raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
-	if bytes.Equal(trimmed, []byte("null")) || len(trimmed) == 0 {
+	if err := validateRawJSONField(trimmed); err != nil {
+		return nil, decodeError(column, err)
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
 		return nil, nil
 	}
 	typeName := strings.ToUpper(strings.TrimSpace(column.LogicalType.Type))
@@ -226,6 +229,9 @@ func (r RowAccessor) RawAt(index int) (json.RawMessage, bool, error) {
 		return nil, false, fmt.Errorf("flinksqlgateway: column index %d is out of range", index)
 	}
 	raw := append(json.RawMessage(nil), r.row.Fields[index]...)
+	if err := validateRawJSONField(raw); err != nil {
+		return nil, false, fmt.Errorf("flinksqlgateway: column index %d has an invalid field: %w", index, err)
+	}
 	return raw, bytes.Equal(bytes.TrimSpace(raw), []byte("null")), nil
 }
 
@@ -244,6 +250,9 @@ func (r RowAccessor) ValueAt(index int) (any, bool, error) {
 		return nil, false, fmt.Errorf("flinksqlgateway: column index %d is out of range", index)
 	}
 	raw := r.row.Fields[index]
+	if err := validateRawJSONField(raw); err != nil {
+		return nil, false, fmt.Errorf("flinksqlgateway: column index %d has an invalid field: %w", index, err)
+	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, true, nil
 	}
@@ -353,6 +362,18 @@ func cloneRawMessages(fields []json.RawMessage) []json.RawMessage {
 		result[index] = append(json.RawMessage(nil), fields[index]...)
 	}
 	return result
+}
+
+// validateRawJSONField는 SQL NULL의 JSON 표현인 null과 전송 중 누락된 빈 field를 구분한다.
+func validateRawJSONField(raw json.RawMessage) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return fmt.Errorf("empty JSON field")
+	}
+	if !json.Valid(trimmed) {
+		return fmt.Errorf("invalid JSON field")
+	}
+	return nil
 }
 
 // scalarText는 JSON 문자열과 숫자·boolean token을 공통 문자열 표현으로 읽는다.
