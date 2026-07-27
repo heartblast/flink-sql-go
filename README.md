@@ -27,7 +27,7 @@ PowerShell 5.1 이상에서 루트 빌드 스크립트를 실행합니다.
 5. `govulncheck` symbol scan 및 전체 module graph scan
 6. 라이브러리/Flink 버전 suffix가 포함된 소스 ZIP, build-info, 의존성 목록, SHA-256 생성
 
-라이브러리 버전 결정 우선순위는 `-Version`, `BUILD_VERSION`, 현재 commit의 정확한 `v*` tag, `VERSION` 순입니다. 기본 빌드는 `-dev`를 붙이지 않으며 현재 기준 산출물 이름은 `flink-sql-go-0.1.1-flink-1.20.4-*`입니다. Git commit과 dirty 상태는 버전 문자열 대신 build-info에 기록됩니다.
+라이브러리 버전 결정 우선순위는 `-Version`, `BUILD_VERSION`, 현재 commit의 정확한 `v*` tag, `VERSION` 순입니다. 기본 빌드는 `-dev`를 붙이지 않으며 현재 기준 산출물 이름은 `flink-sql-go-0.1.3-flink-1.20.4-*`입니다. Git commit과 dirty 상태는 버전 문자열 대신 build-info에 기록됩니다.
 
 ```powershell
 # 명시적 preview 버전
@@ -49,7 +49,7 @@ PowerShell 5.1 이상에서 루트 빌드 스크립트를 실행합니다.
 
 Go 1.26.5에는 이전 빌드에서 검출된 표준 라이브러리 취약점 `GO-2026-5856`, `GO-2026-4970`의 수정이 포함됩니다. 상세한 빌드·배포 절차는 [docs/build.md](docs/build.md)를 참고하십시오.
 
-현재 릴리스의 기능, 호환성, 검증 결과는 [v0.1.1 릴리스 노트](docs/releases/v0.1.1.md)에 정리되어 있습니다.
+현재 릴리스의 기능, 호환성, 검증 결과는 [v0.1.3 릴리스 노트](docs/releases/v0.1.3.md)에 정리되어 있습니다.
 
 ## 주요 기능
 

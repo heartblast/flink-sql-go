@@ -7,7 +7,7 @@ import (
 
 const (
 	// SourceVersion은 소스 release 버전이며 루트 VERSION과 일치해야 한다.
-	SourceVersion = "0.1.1"
+	SourceVersion = "0.1.3"
 	// SupportedFlinkVersion은 검증된 Flink release이며 루트 FLINK_VERSION과 일치해야 한다.
 	SupportedFlinkVersion = "1.20.4"
 )
