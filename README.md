@@ -27,7 +27,7 @@ PowerShell 5.1 이상에서 루트 빌드 스크립트를 실행합니다.
 5. `govulncheck` symbol scan 및 전체 module graph scan
 6. 라이브러리/Flink 버전 suffix가 포함된 소스 ZIP, build-info, 의존성 목록, SHA-256 생성
 
-라이브러리 버전 결정 우선순위는 `-Version`, `BUILD_VERSION`, 현재 commit의 정확한 `v*` tag, `VERSION` 순입니다. 기본 빌드는 `-dev`를 붙이지 않으며 현재 기준 산출물 이름은 `flink-sql-go-0.1.4-flink-1.20.4-*`입니다. Git commit과 dirty 상태는 버전 문자열 대신 build-info에 기록됩니다.
+라이브러리 버전 결정 우선순위는 `-Version`, `BUILD_VERSION`, 현재 commit의 정확한 `v*` tag, `VERSION` 순입니다. 기본 빌드는 `-dev`를 붙이지 않으며 현재 기준 산출물 이름은 `flink-sql-go-0.1.5-flink-1.20.4-*`입니다. Git commit과 dirty 상태는 버전 문자열 대신 build-info에 기록됩니다.
 
 ```powershell
 # 명시적 preview 버전
@@ -49,7 +49,7 @@ PowerShell 5.1 이상에서 루트 빌드 스크립트를 실행합니다.
 
 Go 1.26.5에는 이전 빌드에서 검출된 표준 라이브러리 취약점 `GO-2026-5856`, `GO-2026-4970`의 수정이 포함됩니다. 상세한 빌드·배포 절차는 [docs/build.md](docs/build.md)를 참고하십시오.
 
-현재 릴리스의 기능, 호환성, 검증 결과는 [v0.1.4 릴리스 노트](docs/releases/v0.1.4.md)에 정리되어 있습니다.
+현재 릴리스의 기능, 호환성, 검증 결과는 [v0.1.5 릴리스 노트](docs/releases/v0.1.5.md)에 정리되어 있습니다.
 
 ## 주요 기능
 
@@ -67,6 +67,8 @@ Go 1.26.5에는 이전 빌드에서 검출된 표준 라이브러리 취약점 `
 - 독립된 `flinkrest` JobManager REST client
 - client/stream/session의 중복 호출에 안전한 `Close`
 - 명시적 세션 재구성을 위한 `SessionRecipe`
+- catalog/database/table/current scope를 선언하는 `SessionSetupPlan`
+- session 설정 결과 불명확 상태를 구분하는 typed error와 secret redaction
 - 정밀도 보존 DECIMAL·temporal·nested 타입 Decoder와 Row helper
 - 식별자 quoting이 적용된 Metadata Helper와 Capability API
 - 복합 PK와 bounded snapshot을 지원하는 `changelog.Materializer`
@@ -245,6 +247,106 @@ defer client.CloseSession(context.Background(), replay.SessionHandle)
 ```
 
 기본 정책은 중간 실패 시 생성한 세션을 닫습니다. 세션을 조사 목적으로 유지하려면 `OpenSessionFromRecipeWithOptions`와 `KeepSessionOnFailure`를 명시하십시오. 오류와 Observer에는 setup SQL 원문이 포함되지 않습니다.
+
+## 선언형 Session Setup
+
+`SessionSetupPlan`은 기존 session에 catalog, database, table과 최종 current scope를 선언적으로 적용합니다. `SessionRecipe`가 `/statements` 기반의 범용 SQL replay라면 Session Setup은 Flink REST API v2 이상의 `/configure-session`만 사용합니다. 전체 plan은 network 호출 전에 compile되며 catalog → database → table → `USE CATALOG` → `USE database` 순서로 실행됩니다.
+
+```go
+setupPlan := flinksqlgateway.SessionSetupPlan{
+    Catalogs: []flinksqlgateway.CatalogSetup{{
+        Name:        "warehouse",
+        IfNotExists: true,
+        Options: map[string]string{
+            "type":     "custom_catalog",
+            "endpoint": "https://catalog.internal",
+            "password": catalogPassword,
+        },
+        SensitiveKeys: []string{"private-credential"},
+    }},
+    Databases: []flinksqlgateway.DatabaseSetup{{
+        Catalog:     "warehouse",
+        Name:        "analytics",
+        IfNotExists: true,
+    }},
+    Tables: []flinksqlgateway.TableSetup{{
+        Target: flinksqlgateway.Identifier{
+            Catalog:  "warehouse",
+            Database: "analytics",
+            Object:   "orders",
+        },
+        // 완전한 CREATE TABLE 문이 아니라 library가 quoting한 target 뒤의 정의 부분입니다.
+        Statement: `(order_id BIGINT, amount DECIMAL(18, 2)) WITH (
+            'connector' = 'kafka',
+            'topic' = 'orders',
+            'properties.bootstrap.servers' = 'kafka:9092',
+            'format' = 'json'
+        )`,
+        IfNotExists: true,
+        Verify:      true,
+        Sensitive:   false,
+    }},
+    CurrentCatalog:  "warehouse",
+    CurrentDatabase: "analytics",
+}
+
+setup, err := client.ApplySessionSetup(
+    ctx,
+    session.Handle,
+    setupPlan,
+    flinksqlgateway.SessionSetupOptions{
+        VerifyMetadata:   true,
+        VerifyTableSchema: true,
+    },
+)
+if err != nil {
+    // setup.Steps와 setup.FailedIndex에서 성공/검증/결과 불명확 범위를 확인합니다.
+    return err
+}
+```
+
+`TableSetup.Target`의 Catalog, Database, Object는 모두 필수입니다. `Statement`는 target 뒤에 붙는 table definition만 받으며 완전한 `CREATE TABLE ...` SQL은 compile 단계에서 거부합니다. library는 SQL parser나 문자열 기반 객체명 추측 없이 완전 수식 이름을 생성합니다. option key는 정렬되므로 생성 SQL은 결정적이며 식별자 backtick과 문자열의 작은따옴표는 각각 안전하게 escape됩니다.
+
+session 생성과 setup을 한 번에 수행할 수도 있습니다.
+
+```go
+setup, err := client.OpenSessionWithSetup(
+    ctx,
+    flinksqlgateway.OpenSessionRequest{SessionName: "workspace-user-123"},
+    setupPlan,
+    flinksqlgateway.SessionSetupOptions{VerifyMetadata: true},
+)
+if err != nil {
+    // 기본값은 생성한 session을 제한된 background context로 닫습니다.
+    // PersistentChangesMayRemain은 DROP rollback하지 않은 객체가 남을 수 있음을 뜻합니다.
+    return err
+}
+defer client.CloseSession(context.Background(), setup.SessionHandle)
+```
+
+실패 session을 조사해야 할 때만 `KeepSessionOnFailure`를 사용하십시오. session 종료는 rollback이 아니며 library는 자동 `DROP`을 수행하지 않습니다. 일부 CREATE가 성공했거나 결과가 불명확하면 `PersistentChangesMayRemain`이 `true`입니다.
+
+```go
+setup, err := client.OpenSessionWithSetup(
+    ctx,
+    request,
+    setupPlan,
+    flinksqlgateway.SessionSetupOptions{KeepSessionOnFailure: true},
+)
+if err != nil {
+    var unknown *flinksqlgateway.ConfigurationOutcomeUnknownError
+    if errors.Is(err, flinksqlgateway.ErrConfigurationOutcomeUnknown) && errors.As(err, &unknown) {
+        // 같은 DDL을 자동 또는 무조건 재실행하지 마십시오.
+        // unknown.StepIndex, unknown.StepKind와 read-only metadata로 별도 조정합니다.
+    }
+}
+```
+
+기본 민감 option key는 `password`, `secret`, `token`, `access-key`, `secret-key`와 대소문자 및 `.`, `_`, `-` 변형입니다. `SensitiveKeys`로 catalog별 key를 추가할 수 있고, 구조화할 수 없는 table definition에 secret이 있으면 `TableSetup.Sensitive`를 설정하십시오. setup SQL과 option map은 결과, typed error와 관측 event에 저장하지 않으며 Gateway가 SQL이나 secret을 오류에 반사해도 `********`로 치환합니다.
+
+`VerifyMetadata`는 기존 `ListCatalogs`, `ListDatabases`, `ListTables`, `ListViews`를 사용하고 `VerifyTableSchema`는 `DescribeTable`까지 수행합니다. DDL 성공과 검증 성공은 `Applied`, `Verified`로 분리됩니다. 검증 실패는 DDL 미적용을 의미하지 않습니다.
+
+Flink의 기본 `default_catalog`는 in-memory catalog이므로 객체 수명은 session에 묶입니다. HiveCatalog 같은 영속 catalog의 객체는 session 종료 뒤에도 남을 수 있으므로 실패 cleanup을 rollback으로 간주하지 마십시오.
 
 ## 타입 Decoder와 Row helper
 

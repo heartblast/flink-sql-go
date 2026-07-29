@@ -52,6 +52,13 @@ type StatementExecutor interface {
 	StreamResults(ctx context.Context, sessionHandle, statement string, options StreamOptions) (<-chan ResultEvent, <-chan error)
 }
 
+// SessionSetupExecutor는 기존 Client 구현자의 호환성을 깨지 않고 선언형 session setup을
+// 적용하는 별도 공개 계약이다.
+type SessionSetupExecutor interface {
+	// ApplySessionSetup은 기존 session에 검증된 catalog, database, table과 현재 scope를 적용한다.
+	ApplySessionSetup(ctx context.Context, sessionHandle string, plan SessionSetupPlan, options SessionSetupOptions) (*SessionSetupResult, error)
+}
+
 // GatewayClient는 여러 goroutine에서 안전하게 사용할 수 있다. Session 상태를 바꾸는
 // SQL의 실행 순서를 보장하는 책임은 호출자에게 있다.
 type GatewayClient struct {
@@ -80,6 +87,7 @@ type GatewayClient struct {
 	clientClosed bool
 	managed      map[*managedSession]struct{}
 	streams      map[*resultStream]struct{}
+	setupGates   map[string]*sessionSetupGate
 }
 
 // sessionRecord는 공개 Session과 memory를 공유하지 않는 client 내부 session 상태이다.
@@ -106,6 +114,9 @@ func (s *sessionRecord) snapshot() *Session {
 // 컴파일 시 GatewayClient가 공개 Client 계약을 모두 구현하는지 확인한다.
 var _ Client = (*GatewayClient)(nil)
 
+// 컴파일 시 GatewayClient가 기존 Client와 독립적인 setup 계약을 구현하는지 확인한다.
+var _ SessionSetupExecutor = (*GatewayClient)(nil)
+
 // NewClient는 설정을 검증하고 재사용 가능한 client를 생성한다. 생성 중에는 네트워크를
 // 호출하지 않으며 첫 versioned 요청에서 APIVersion을 검증한다.
 func NewClient(cfg Config) (*GatewayClient, error) {
@@ -131,6 +142,7 @@ func NewClient(cfg Config) (*GatewayClient, error) {
 		heartbeats:        make(map[string]*HeartbeatRunner),
 		managed:           make(map[*managedSession]struct{}),
 		streams:           make(map[*resultStream]struct{}),
+		setupGates:        make(map[string]*sessionSetupGate),
 	}, nil
 }
 

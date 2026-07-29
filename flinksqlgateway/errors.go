@@ -25,6 +25,12 @@ var (
 	// ErrExecutionOutcomeUnknown은 statement가 Flink에 도달했을 수 있지만 client가
 	// operation handle을 받지 못했음을 나타낸다. 이 오류는 자동 재시도하면 안 된다.
 	ErrExecutionOutcomeUnknown = errors.New("statement execution outcome is unknown")
+	// ErrConfigurationOutcomeUnknown은 session 설정이 Flink에 도달했을 수 있지만 client가
+	// 완료 응답을 확인하지 못했음을 나타낸다. 같은 설정을 자동 재시도하면 안 된다.
+	ErrConfigurationOutcomeUnknown = errors.New("session configuration outcome is unknown")
+	// ErrSessionSetupVerification은 적용된 setup 객체를 metadata 조회로 확인하지 못했음을 나타낸다.
+	// DDL이 적용되지 않았다는 의미로 사용하면 안 된다.
+	ErrSessionSetupVerification = errors.New("session setup metadata verification failed")
 	// ErrClientClosed는 client가 종료되어 새 작업을 받지 않음을 나타낸다.
 	ErrClientClosed = errors.New("flink sql gateway client is closed")
 	// ErrSessionClosed는 고수준 session wrapper가 로컬에서 종료되었음을 나타낸다.
@@ -56,6 +62,89 @@ type ExecutionOutcomeUnknownError struct {
 	Endpoint      string
 	RequestPhase  RequestPhase
 	Cause         error
+}
+
+// ConfigurationOutcomeUnknownError는 server 처리 결과를 안전하게 판단할 수 없는 session
+// 설정을 보고한다. SQL과 catalog option은 보관하지 않는다.
+type ConfigurationOutcomeUnknownError struct {
+	SessionHandle string
+	StepIndex     int
+	StepKind      SessionSetupStepKind
+	RequestPhase  RequestPhase
+	Cause         error
+}
+
+// Error는 SQL 없이 설정 결과 불명확 단계와 마스킹한 session을 반환한다.
+func (e *ConfigurationOutcomeUnknownError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	step := ""
+	if e.StepIndex >= 0 {
+		step = fmt.Sprintf(" step=%d kind=%s", e.StepIndex, e.StepKind)
+	}
+	return fmt.Sprintf("%v:%s phase=%s session=%s", ErrConfigurationOutcomeUnknown, step, e.RequestPhase, MaskHandle(e.SessionHandle))
+}
+
+// Unwrap은 원인이 된 정제된 transport 또는 API 오류를 보존한다.
+func (e *ConfigurationOutcomeUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// Is는 원인 오류와 함께 ErrConfigurationOutcomeUnknown 분류를 제공한다.
+func (e *ConfigurationOutcomeUnknownError) Is(target error) bool {
+	return target == ErrConfigurationOutcomeUnknown
+}
+
+// SessionSetupError는 setup의 주 오류와 선택적인 session cleanup 오류를 함께 보존한다.
+// SQL과 option 원문은 포함하지 않으며 Target은 compile 단계에서 검증된 식별자만 담는다.
+type SessionSetupError struct {
+	Cause          error
+	CloseError     error
+	SessionHandle  string
+	FailedIndex    int
+	StepKind       SessionSetupStepKind
+	Target         Identifier
+	OutcomeUnknown bool
+}
+
+// Error는 민감한 원인 메시지를 반복하지 않고 안전한 setup 실패 문맥만 반환한다.
+func (e *SessionSetupError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	message := "flink sql session setup failed"
+	if e.FailedIndex >= 0 {
+		message += fmt.Sprintf(" at step %d kind=%s", e.FailedIndex, e.StepKind)
+	}
+	if target := formatSessionSetupTarget(e.Target); target != "" {
+		message += " target=" + target
+	}
+	if e.OutcomeUnknown {
+		message += ": outcome unknown"
+	}
+	if e.CloseError != nil {
+		message += "; session cleanup failed"
+	}
+	return message
+}
+
+// Unwrap은 setup 원인과 cleanup 오류를 errors.Is와 errors.As가 모두 탐색하게 한다.
+func (e *SessionSetupError) Unwrap() []error {
+	if e == nil {
+		return nil
+	}
+	result := make([]error, 0, 2)
+	if e.Cause != nil {
+		result = append(result, e.Cause)
+	}
+	if e.CloseError != nil {
+		result = append(result, e.CloseError)
+	}
+	return result
 }
 
 // Error는 session handle을 마스킹한 실행 결과 불명확 오류 메시지를 반환한다.

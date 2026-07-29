@@ -41,6 +41,26 @@ func TestFlink1204Gateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.CloseSession(context.Background(), session.Handle)
+	setup, err := client.ApplySessionSetup(ctx, session.Handle, flinksqlgateway.SessionSetupPlan{
+		Tables: []flinksqlgateway.TableSetup{{
+			Target: flinksqlgateway.Identifier{
+				Catalog:  "default_catalog",
+				Database: "default_database",
+				Object:   "flink_sql_go_setup_test",
+			},
+			Statement:   "(id BIGINT) WITH ('connector' = 'datagen', 'number-of-rows' = '1')",
+			IfNotExists: true,
+			Verify:      true,
+		}},
+		CurrentCatalog:  "default_catalog",
+		CurrentDatabase: "default_database",
+	}, flinksqlgateway.SessionSetupOptions{VerifyMetadata: true, VerifyTableSchema: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !setup.Complete || !setup.Steps[0].Verified {
+		t.Fatalf("session setup = %+v", setup)
+	}
 	result, err := client.ExecuteAndWait(ctx, session.Handle, "SELECT 1", flinksqlgateway.ExecuteOptions{MaxRows: 10})
 	if err != nil {
 		t.Fatal(err)

@@ -111,7 +111,7 @@ func (c *GatewayClient) ConfigureSession(ctx context.Context, sessionHandle, sta
 	if err := validateSessionHandle(sessionHandle); err != nil {
 		return err
 	}
-	if apiVersionNumber(c.cfg.APIVersion) < 2 {
+	if !capabilitiesForVersion(c.cfg.APIVersion).ConfigureSession {
 		return fmt.Errorf("%w: configure-session requires v2 or newer", ErrUnsupportedAPI)
 	}
 	if err := c.validateStatement(ctx, sessionHandle, statement); err != nil {
@@ -120,6 +120,17 @@ func (c *GatewayClient) ConfigureSession(ctx context.Context, sessionHandle, sta
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return err
 	}
+	release, err := c.acquireSessionSetup(ctx, sessionHandle)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return c.configureSessionRequest(ctx, sessionHandle, statement, executionTimeout, serverMessageRedaction{redactAll: true})
+}
+
+// configureSessionRequest는 검증과 session별 직렬화를 마친 설정 POST를 한 번만 전송한다.
+// server가 SQL을 반사할 수 있으므로 응답 message 전체를 관측 전에 치환한다.
+func (c *GatewayClient) configureSessionRequest(ctx context.Context, sessionHandle, statement string, executionTimeout time.Duration, redaction serverMessageRedaction) error {
 	if executionTimeout <= 0 {
 		executionTimeout = c.cfg.ExecutionTimeout
 	}
@@ -135,8 +146,21 @@ func (c *GatewayClient) ConfigureSession(ctx context.Context, sessionHandle, sta
 		Statement string `json:"statement"`
 	}{statement}
 	target, _ := c.endpointURL(true, "/sessions/"+pathSegment(sessionHandle)+"/configure-session")
+	requestCtx = withServerMessageRedaction(requestCtx, redaction)
 	_, err := c.doJSON(requestCtx, http.MethodPost, target, body, nil, false)
-	return err
+	if err == nil {
+		return nil
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !statementOutcomeIsUnknown(apiErr) {
+		return err
+	}
+	return &ConfigurationOutcomeUnknownError{
+		SessionHandle: sessionHandle,
+		StepIndex:     -1,
+		RequestPhase:  apiErr.RequestPhase,
+		Cause:         err,
+	}
 }
 
 // CompleteStatement는 v2 이상에서 SQL 자동완성 후보를 반환한다.
