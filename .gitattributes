@@ -1,0 +1,5 @@
+# Go 도구는 포맷 및 module 파일을 byte 단위로 비교하므로 모든 OS에서 LF를 유지한다.
+.gitattributes text eol=lf
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
