@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-analysis:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify modules
+        run: go mod verify
+      - name: Verify tidy module files
+        shell: bash
+        run: |
+          tidy_diff="$(go mod tidy -diff)"
+          if [[ -n "$tidy_diff" ]]; then
+            printf '%s\n' "$tidy_diff"
+            exit 1
+          fi
+      - name: Verify formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Run vet
+        run: go vet ./...
+      - name: Compile packages
+        run: go build ./...
+
+  unit-and-fixture-contract:
+    name: Unit and fixture contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run unit and fixture tests
+        run: go test -count=1 ./...
+      - name: Compile integration-tagged tests
+        run: go test -tags=integration -run '^$' ./...
+
+  vulnerability-scan:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Scan reachable source and tests
+        run: go tool govulncheck -test -show=version ./...
+      - name: Scan complete module graph
+        run: go tool govulncheck -C flinksqlgateway -scan=module

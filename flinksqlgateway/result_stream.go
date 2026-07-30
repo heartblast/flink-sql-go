@@ -32,8 +32,9 @@ func (c *GatewayClient) ExecuteStream(ctx context.Context, sessionHandle, statem
 	}
 
 	operation, err := c.ExecuteStatement(executionCtx, sessionHandle, ExecuteStatementRequest{
-		Statement:       statement,
-		ExecutionConfig: options.ExecutionConfig,
+		Statement:        statement,
+		ExecutionConfig:  options.ExecutionConfig,
+		ExecutionTimeout: executionTimeout,
 	})
 	if err != nil {
 		cancel()

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "releaseLine": "1.20",
+  "flinkVersion": "1.20.4",
+  "apiVersion": "v3",
+  "synthetic": false,
+  "countsAsTestedPatch": true,
+  "provenance": "Existing flink-sql-go Flink 1.20.4 regression contract, normalized as raw JSON fixtures"
+}

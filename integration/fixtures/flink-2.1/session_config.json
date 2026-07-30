@@ -1,0 +1,6 @@
+{
+  "properties": {
+    "execution.runtime-mode": "streaming",
+    "pipeline.name": "fixture-contract"
+  }
+}

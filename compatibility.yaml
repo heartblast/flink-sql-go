@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "defaultReleaseLine": "1.20",
+  "defaultApiVersion": "v3",
+  "supportedReleases": [
+    {
+      "releaseLine": "1.20",
+      "status": "maintenance",
+      "testedVersions": ["1.20.4"],
+      "restApiVersions": ["v1", "v2", "v3"],
+      "stableApiVersion": "v3",
+      "capabilities": {
+        "configureSession": true,
+        "completeStatement": true,
+        "rowFormat": true,
+        "materializedTable": true,
+        "deployScript": false,
+        "wireExecutionTimeout": false
+      }
+    },
+    {
+      "releaseLine": "2.0",
+      "status": "experimental",
+      "testedVersions": [],
+      "restApiVersions": ["v1", "v2", "v3", "v4"],
+      "stableApiVersion": "v3",
+      "capabilities": {
+        "configureSession": true,
+        "completeStatement": true,
+        "rowFormat": true,
+        "materializedTable": true,
+        "deployScript": true,
+        "wireExecutionTimeout": true
+      }
+    },
+    {
+      "releaseLine": "2.1",
+      "status": "experimental",
+      "testedVersions": [],
+      "restApiVersions": ["v1", "v2", "v3", "v4"],
+      "stableApiVersion": "v3",
+      "capabilities": {
+        "configureSession": true,
+        "completeStatement": true,
+        "rowFormat": true,
+        "materializedTable": true,
+        "deployScript": true,
+        "wireExecutionTimeout": true
+      }
+    },
+    {
+      "releaseLine": "2.2",
+      "status": "experimental",
+      "testedVersions": [],
+      "restApiVersions": ["v1", "v2", "v3", "v4"],
+      "stableApiVersion": "v3",
+      "capabilities": {
+        "configureSession": true,
+        "completeStatement": true,
+        "rowFormat": true,
+        "materializedTable": true,
+        "deployScript": true,
+        "wireExecutionTimeout": true
+      }
+    },
+    {
+      "releaseLine": "2.3",
+      "status": "experimental",
+      "testedVersions": [],
+      "restApiVersions": ["v1", "v2", "v3", "v4"],
+      "stableApiVersion": "v3",
+      "capabilities": {
+        "configureSession": true,
+        "completeStatement": true,
+        "rowFormat": true,
+        "materializedTable": true,
+        "deployScript": true,
+        "wireExecutionTimeout": true
+      }
+    }
+  ]
+}

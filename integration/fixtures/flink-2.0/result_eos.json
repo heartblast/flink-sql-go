@@ -1,0 +1,16 @@
+{
+  "resultType": "EOS",
+  "isQueryResult": true,
+  "resultKind": "SUCCESS_WITH_CONTENT",
+  "results": {
+    "columns": [
+      {
+        "name": "id",
+        "logicalType": {"type": "INTEGER", "nullable": false},
+        "comment": null
+      }
+    ],
+    "rowFormat": "JSON",
+    "data": []
+  }
+}

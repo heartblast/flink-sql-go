@@ -10,7 +10,7 @@
 ## 프로젝트 기준
 
 - Go module 경로는 `github.com/heartblast/flink-sql-go`이다.
-- 기준 도구 체인은 `go.mod`에 선언된 Go 1.26.5이며 지원 대상은 `FLINK_VERSION`에 기록된 Apache Flink 1.20.4이다.
+- 기준 도구 체인은 `go.mod`에 선언된 Go 1.26.5이며 Flink release line, 상태와 직접 검증 patch는 `compatibility.yaml`을 기준으로 관리한다.
 - SQL Gateway와 JobManager REST client는 표준 `net/http`를 사용한다. JDBC, JVM, GraalVM, CGO 및 `database/sql` 호환 계층을 추가하지 않는다.
 - 공개 DTO와 전송 계층을 분리하고, 서버가 반환한 미지의 상태·필드와 원본 JSON의 의미를 가능한 한 보존한다.
 - SQL Gateway의 Session, Operation과 Flink Job의 생명주기를 서로 독립적으로 취급한다. SQL 문자열을 정규식으로 분류해 실행 흐름을 결정하지 않는다.
@@ -44,6 +44,6 @@
 
 ## 버전과 Git
 
-- 라이브러리 버전은 `VERSION`, 지원 Flink 버전은 `FLINK_VERSION`, 소스의 값은 `flinksqlgateway/version.go`에서 일관되게 관리한다.
+- 라이브러리 버전은 `VERSION`, Flink 호환성 matrix는 `compatibility.yaml`, 소스의 라이브러리 값은 `flinksqlgateway/version.go`에서 관리한다. 런타임 registry와 manifest의 일치는 contract test로 검증한다.
 - 릴리스 전에는 깨끗한 worktree와 정확한 `v*` tag에서 `./build.ps1 -Release`를 실행하고 산출물의 checksum과 build-info를 확인한다.
 - 사용자가 명시적으로 요청하지 않으면 commit, tag, push, release 생성 또는 기존 이력 변경을 하지 않는다.

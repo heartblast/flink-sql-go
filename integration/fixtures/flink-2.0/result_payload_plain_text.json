@@ -1,0 +1,23 @@
+{
+  "resultType": "PAYLOAD",
+  "isQueryResult": true,
+  "resultKind": "SUCCESS_WITH_CONTENT",
+  "results": {
+    "columns": [
+      {
+        "name": "id",
+        "logicalType": {"type": "INTEGER", "nullable": false},
+        "comment": null
+      },
+      {
+        "name": "name",
+        "logicalType": {"type": "VARCHAR", "nullable": false},
+        "comment": null
+      }
+    ],
+    "rowFormat": "PLAIN_TEXT",
+    "data": [
+      {"kind": "INSERT", "fields": ["42", "flink"]}
+    ]
+  }
+}

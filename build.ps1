@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param(
     [string]$Version,
-    [string]$FlinkVersion,
     [string]$OutputDirectory = "dist",
     [string]$VulnerabilityDatabase = "https://vuln.go.dev",
     [switch]$Release,
@@ -39,6 +38,107 @@ function Assert-SemVer {
     if ($Value -notmatch $pattern) {
         throw "Version '$Value' is not valid SemVer 2.0.0."
     }
+}
+
+function Read-CompatibilityManifest {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        $manifest = Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        throw "Compatibility manifest '$Path' must use the repository's JSON-compatible YAML format: $($_.Exception.Message)"
+    }
+
+    foreach ($propertyName in @("schemaVersion", "defaultReleaseLine", "defaultApiVersion", "supportedReleases")) {
+        if ($null -eq $manifest.PSObject.Properties[$propertyName]) {
+            throw "Compatibility manifest is missing '$propertyName'."
+        }
+    }
+    if ($manifest.schemaVersion -ne 1) {
+        throw "Unsupported compatibility manifest schema version '$($manifest.schemaVersion)'."
+    }
+
+    $releases = @($manifest.supportedReleases)
+    if ($releases.Count -eq 0) {
+        throw "Compatibility manifest must declare at least one supported release line."
+    }
+
+    $allowedStatuses = @("planned", "experimental", "supported", "maintenance", "unsupported")
+    $requiredReleaseProperties = @(
+        "releaseLine",
+        "status",
+        "testedVersions",
+        "restApiVersions",
+        "stableApiVersion",
+        "capabilities"
+    )
+    $requiredCapabilities = @(
+        "configureSession",
+        "completeStatement",
+        "rowFormat",
+        "materializedTable",
+        "deployScript",
+        "wireExecutionTimeout"
+    )
+    $seenReleaseLines = @{}
+    $defaultProfile = $null
+
+    foreach ($release in $releases) {
+        foreach ($propertyName in $requiredReleaseProperties) {
+            if ($null -eq $release.PSObject.Properties[$propertyName]) {
+                throw "Compatibility release entry is missing '$propertyName'."
+            }
+        }
+
+        $releaseLine = "$($release.releaseLine)"
+        if ($releaseLine -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw "Compatibility release line '$releaseLine' must use major.minor format."
+        }
+        if ($seenReleaseLines.ContainsKey($releaseLine)) {
+            throw "Compatibility release line '$releaseLine' is duplicated."
+        }
+        $seenReleaseLines[$releaseLine] = $true
+
+        if ($allowedStatuses -notcontains "$($release.status)") {
+            throw "Compatibility release line '$releaseLine' has invalid status '$($release.status)'."
+        }
+
+        $apiVersions = @($release.restApiVersions)
+        if ($apiVersions.Count -eq 0) {
+            throw "Compatibility release line '$releaseLine' must declare REST API versions."
+        }
+        foreach ($apiVersion in $apiVersions) {
+            if ("$apiVersion" -notmatch '^v[1-9][0-9]*$') {
+                throw "Compatibility release line '$releaseLine' has invalid REST API version '$apiVersion'."
+            }
+        }
+        if ($apiVersions -notcontains "$($release.stableApiVersion)") {
+            throw "Compatibility release line '$releaseLine' stable API version is not in restApiVersions."
+        }
+
+        foreach ($testedVersion in @($release.testedVersions)) {
+            Assert-SemVer "$testedVersion"
+        }
+        foreach ($capabilityName in $requiredCapabilities) {
+            $capability = $release.capabilities.PSObject.Properties[$capabilityName]
+            if ($null -eq $capability -or $capability.Value -isnot [bool]) {
+                throw "Compatibility release line '$releaseLine' capability '$capabilityName' must be boolean."
+            }
+        }
+
+        if ($releaseLine -eq "$($manifest.defaultReleaseLine)") {
+            $defaultProfile = $release
+        }
+    }
+
+    if ($null -eq $defaultProfile) {
+        throw "Default release line '$($manifest.defaultReleaseLine)' is not declared."
+    }
+    if (@($defaultProfile.restApiVersions) -notcontains "$($manifest.defaultApiVersion)") {
+        throw "Default API version '$($manifest.defaultApiVersion)' is not supported by the default release line."
+    }
+
+    return $manifest
 }
 
 function Invoke-VulnerabilityScan {
@@ -105,23 +205,16 @@ try {
     $BaseVersion = (Get-Content -Raw -LiteralPath "VERSION").Trim()
     Assert-SemVer $BaseVersion
 
-    $DefaultFlinkVersion = (Get-Content -Raw -LiteralPath "FLINK_VERSION").Trim()
-    Assert-SemVer $DefaultFlinkVersion
-    $FlinkVersionSource = "FLINK_VERSION"
-    if (-not [string]::IsNullOrWhiteSpace($FlinkVersion)) {
-        $ResolvedFlinkVersion = $FlinkVersion.Trim().TrimStart('v')
-        $FlinkVersionSource = "parameter"
-    } elseif (-not [string]::IsNullOrWhiteSpace($env:SUPPORTED_FLINK_VERSION)) {
-        $ResolvedFlinkVersion = $env:SUPPORTED_FLINK_VERSION.Trim().TrimStart('v')
-        $FlinkVersionSource = "SUPPORTED_FLINK_VERSION"
-    } else {
-        $ResolvedFlinkVersion = $DefaultFlinkVersion
-    }
-    Assert-SemVer $ResolvedFlinkVersion
+    $CompatibilityManifestPath = Join-Path $RepositoryRoot "compatibility.yaml"
+    $CompatibilityManifest = Read-CompatibilityManifest $CompatibilityManifestPath
+    $SupportedFlinkReleaseLines = @(
+        $CompatibilityManifest.supportedReleases | ForEach-Object { "$($_.releaseLine)" }
+    )
 
     $HasGit = $null -ne (Get-Command git -ErrorAction SilentlyContinue)
     $HasCommit = $false
     $Commit = "uncommitted"
+    $ExactTags = @()
     $ExactTag = ""
     $Dirty = $true
 
@@ -132,12 +225,12 @@ try {
             $HasCommit = $LASTEXITCODE -eq 0
             if ($HasCommit) {
                 $Commit = "$commitOutput".Trim()
-                $tagOutput = @(& git tag --points-at HEAD --list "v[0-9]*")
+                $ExactTags = @(& git tag --points-at HEAD --list "v[0-9]*")
                 if ($LASTEXITCODE -ne 0) {
                     throw "Unable to inspect Git tags."
                 }
-                if ($tagOutput.Count -gt 0) {
-                    $ExactTag = "$($tagOutput[0])".Trim()
+                if ($ExactTags.Count -eq 1) {
+                    $ExactTag = "$($ExactTags[0])".Trim()
                 }
             }
             $gitStatus = @(& git status --porcelain --untracked-files=normal)
@@ -164,11 +257,21 @@ try {
     Assert-SemVer $ResolvedVersion
 
     if ($Release) {
-        if ($Dirty -and -not $AllowDirty) {
-            throw "Release builds require a clean worktree. Commit or stash changes, or explicitly use -AllowDirty."
+        if (-not $HasGit -or -not $HasCommit) {
+            throw "Release builds require a Git worktree with a committed HEAD."
         }
-        if ($VersionSource -eq "VERSION") {
-            throw "Release builds require an exact v* Git tag, -Version, or BUILD_VERSION."
+        if ($AllowDirty) {
+            throw "Release builds cannot use -AllowDirty."
+        }
+        if ($Dirty) {
+            throw "Release builds require a clean worktree."
+        }
+        $ExpectedReleaseTag = "v$BaseVersion"
+        if ($ExactTags.Count -ne 1 -or "$($ExactTags[0])".Trim() -ne $ExpectedReleaseTag) {
+            throw "Release builds require HEAD to have exactly the tag '$ExpectedReleaseTag'."
+        }
+        if ($ResolvedVersion -ne $BaseVersion) {
+            throw "Release version '$ResolvedVersion' must match VERSION '$BaseVersion'."
         }
         if ($AllowVulnerabilities) {
             throw "Release builds cannot use -AllowVulnerabilities."
@@ -178,12 +281,13 @@ try {
     New-Item -ItemType Directory -Path $DistDirectory -Force | Out-Null
 
     $ArtifactVersion = $ResolvedVersion
-    $ArtifactBaseName = "flink-sql-go-$ArtifactVersion-flink-$ResolvedFlinkVersion"
+    $ArtifactBaseName = "flink-sql-go-$ArtifactVersion"
     $ReachableReport = Join-Path $DistDirectory "$ArtifactBaseName.govulncheck.txt"
     $ModuleReport = Join-Path $DistDirectory "$ArtifactBaseName.govulncheck-modules.txt"
     $CoverageReport = Join-Path $DistDirectory "$ArtifactBaseName.coverage.out"
     $ModuleList = Join-Path $DistDirectory "$ArtifactBaseName.modules.txt"
     $BuildInfoPath = Join-Path $DistDirectory "$ArtifactBaseName.build-info.json"
+    $CompatibilityInfoPath = Join-Path $DistDirectory "$ArtifactBaseName.compatibility.json"
     $ArchivePath = Join-Path $DistDirectory "$ArtifactBaseName-source.zip"
     $ChecksumPath = Join-Path $DistDirectory "$ArtifactBaseName.sha256"
 
@@ -195,14 +299,13 @@ try {
     }
     $LinkerFlags = @(
         "-X $ModulePath/flinksqlgateway.buildVersion=$ResolvedVersion",
-        "-X $ModulePath/flinksqlgateway.buildFlinkVersion=$ResolvedFlinkVersion",
         "-X $ModulePath/flinksqlgateway.buildCommit=$Commit",
         "-X $ModulePath/flinksqlgateway.buildDate=$BuildDate",
         "-X $ModulePath/flinksqlgateway.buildDirty=$DirtyText"
     ) -join ' '
 
     Write-Host "==> Build version: $ResolvedVersion ($VersionSource)"
-    Write-Host "==> Supported Flink: $ResolvedFlinkVersion ($FlinkVersionSource)"
+    Write-Host "==> Flink release lines: $($SupportedFlinkReleaseLines -join ', ')"
     Write-Host "==> Go toolchain: $ActualGoVersion"
     Write-Host "==> Verifying module checksums"
     Invoke-Checked go mod verify
@@ -215,7 +318,9 @@ try {
     }
 
     Write-Host "==> Checking formatting"
-    $unformatted = @(& gofmt -l flinksqlgateway flinkrest)
+    $FormatTargets = @("flinksqlgateway", "flinkrest", "integration", "internal") |
+        Where-Object { Test-Path -LiteralPath $_ }
+    $unformatted = @(& gofmt -l @FormatTargets)
     if ($LASTEXITCODE -ne 0) {
         throw "gofmt failed."
     }
@@ -228,6 +333,9 @@ try {
 
     Write-Host "==> Running unit tests"
     Invoke-Checked go test -count=1 "-coverprofile=$CoverageReport" "-ldflags=$LinkerFlags" ./...
+
+    Write-Host "==> Compiling integration-tagged tests"
+    Invoke-Checked go test -tags=integration -run=^$ "-ldflags=$LinkerFlags" ./...
 
     if ($Race) {
         Write-Host "==> Running race detector"
@@ -264,14 +372,46 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to determine govulncheck version."
     }
+
+    $CompatibilityReleases = @(
+        # PowerShell 변수명은 대소문자를 구분하지 않으므로 script 매개변수 $Release와 충돌하지 않게 한다.
+        foreach ($compatibilityRelease in @($CompatibilityManifest.supportedReleases)) {
+            [ordered]@{
+                releaseLine = "$($compatibilityRelease.releaseLine).x"
+                status = "$($compatibilityRelease.status)"
+                testedVersions = @($compatibilityRelease.testedVersions)
+                apiVersions = @($compatibilityRelease.restApiVersions)
+                stableApiVersion = "$($compatibilityRelease.stableApiVersion)"
+                capabilities = [ordered]@{
+                    configureSession = [bool]$compatibilityRelease.capabilities.configureSession
+                    completeStatement = [bool]$compatibilityRelease.capabilities.completeStatement
+                    rowFormat = [bool]$compatibilityRelease.capabilities.rowFormat
+                    materializedTable = [bool]$compatibilityRelease.capabilities.materializedTable
+                    deployScript = [bool]$compatibilityRelease.capabilities.deployScript
+                    wireExecutionTimeout = [bool]$compatibilityRelease.capabilities.wireExecutionTimeout
+                }
+            }
+        }
+    )
+    $CompatibilityInfo = [ordered]@{
+        schemaVersion = [int]$CompatibilityManifest.schemaVersion
+        libraryVersion = $ResolvedVersion
+        defaultReleaseLine = "$($CompatibilityManifest.defaultReleaseLine).x"
+        defaultApiVersion = "$($CompatibilityManifest.defaultApiVersion)"
+        supportedFlinkReleaseLines = $CompatibilityReleases
+    }
+    $CompatibilityInfo | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $CompatibilityInfoPath -Encoding UTF8
+
     $BuildInfo = [ordered]@{
-        schemaVersion = 2
+        schemaVersion = 3
         module = $ModulePath
+        libraryVersion = $ResolvedVersion
         version = $ResolvedVersion
         versionSource = $VersionSource
         sourceVersion = $BaseVersion
-        supportedFlinkVersion = $ResolvedFlinkVersion
-        flinkVersionSource = $FlinkVersionSource
+        defaultFlinkReleaseLine = "$($CompatibilityManifest.defaultReleaseLine)"
+        defaultApiVersion = "$($CompatibilityManifest.defaultApiVersion)"
+        supportedFlinkReleaseLines = @($SupportedFlinkReleaseLines)
         artifactBaseName = $ArtifactBaseName
         commit = $Commit
         dirty = $Dirty
@@ -283,12 +423,14 @@ try {
         reachableScanExitCode = $ReachableScanExitCode
         moduleScanExitCode = $ModuleScanExitCode
     }
-    $BuildInfo | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $BuildInfoPath -Encoding UTF8
+    $BuildInfo | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $BuildInfoPath -Encoding UTF8
 
     $ArchiveItems = @(
         ".gitignore",
+        ".github",
+        "AGENTS.md",
         "VERSION",
-        "FLINK_VERSION",
+        "compatibility.yaml",
         "README.md",
         "build.ps1",
         "go.mod",
@@ -296,14 +438,18 @@ try {
         "docs",
         "flinksqlgateway",
         "flinkrest",
+        "integration",
+        "internal",
+        "testdata",
         "prompt_management"
-    ) | ForEach-Object { Join-Path $RepositoryRoot $_ }
+    ) | ForEach-Object { Join-Path $RepositoryRoot $_ } | Where-Object { Test-Path -LiteralPath $_ }
     Compress-Archive -LiteralPath $ArchiveItems -DestinationPath $ArchivePath -CompressionLevel Optimal -Force
-    Compress-Archive -LiteralPath $BuildInfoPath -DestinationPath $ArchivePath -Update
+    Compress-Archive -LiteralPath @($BuildInfoPath, $CompatibilityInfoPath) -DestinationPath $ArchivePath -Update
 
     $ChecksumTargets = @(
         $ArchivePath,
         $BuildInfoPath,
+        $CompatibilityInfoPath,
         $ModuleList,
         $ReachableReport,
         $ModuleReport,
@@ -318,8 +464,9 @@ try {
     Write-Host ""
     Write-Host "Build completed successfully."
     Write-Host "Version:         $ResolvedVersion"
-    Write-Host "Supported Flink: $ResolvedFlinkVersion"
+    Write-Host "Flink releases:  $($SupportedFlinkReleaseLines -join ', ')"
     Write-Host "Archive:         $ArchivePath"
+    Write-Host "Compatibility:   $CompatibilityInfoPath"
     Write-Host "Checksums:        $ChecksumPath"
     Write-Host "Security:         $ReachableReport"
     Write-Host "                  $ModuleReport"

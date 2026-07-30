@@ -1,0 +1,50 @@
+name: SQL Gateway integration
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sql-gateway-integration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gateway-contract:
+    name: Flink ${{ matrix.flink_version }} / ${{ matrix.api_version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 2.0.x~2.3.x는 testedVersions와 실제 endpoint가 생기기 전까지 포함하지 않는다.
+          - release_line: '1.20'
+            flink_version: '1.20.4'
+            api_version: v3
+            gateway_secret: FLINK_SQL_GATEWAY_URL_120
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run real Gateway contract
+        shell: bash
+        env:
+          FLINK_SQL_GATEWAY_URL: ${{ secrets[matrix.gateway_secret] }}
+          FLINK_SQL_GATEWAY_API_VERSION: ${{ matrix.api_version }}
+          FLINK_TEST_VERSION: ${{ matrix.flink_version }}
+          FLINK_TEST_RELEASE_LINE: ${{ matrix.release_line }}
+          FLINK_TEST_API_VERSION: ${{ matrix.api_version }}
+        run: |
+          if [[ -z "$FLINK_SQL_GATEWAY_URL" ]]; then
+            echo "::error::Repository secret ${{ matrix.gateway_secret }} is required; an absent real Gateway must not be reported as a passing contract."
+            exit 1
+          fi
+          go test -tags=integration -count=1 ./...

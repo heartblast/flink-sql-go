@@ -105,20 +105,26 @@ func (c *GatewayClient) GetSessionConfig(ctx context.Context, sessionHandle stri
 	return response.Properties, nil
 }
 
-// ConfigureSession은 v2 이상에서 session 설정 statement를 실행하며 POST를 자동 재시도하지 않는다.
-// executionTimeout은 Flink 1.20.4가 지원하지 않는 wire field 대신 client-side context 제한으로 적용한다.
+// ConfigureSession은 profile과 protocol이 허용할 때 session 설정 statement를 실행하며 POST를
+// 자동 재시도하지 않는다. executionTimeout은 항상 client-side 제한으로 적용한다.
 func (c *GatewayClient) ConfigureSession(ctx context.Context, sessionHandle, statement string, executionTimeout time.Duration) error {
 	if err := validateSessionHandle(sessionHandle); err != nil {
 		return err
 	}
-	if !capabilitiesForVersion(c.cfg.APIVersion).ConfigureSession {
-		return fmt.Errorf("%w: configure-session requires v2 or newer", ErrUnsupportedAPI)
-	}
 	if err := c.validateStatement(ctx, sessionHandle, statement); err != nil {
 		return err
 	}
+	if configured, known, err := c.configuredCompatibility(); err != nil {
+		return err
+	} else if known && !configured.Capabilities.ConfigureSession {
+		return newCompatibilityError(ErrUnsupportedCapability, "configure-session", configured.FlinkVersion, configured.ReleaseLine, configured.APIVersion, nil)
+	}
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return err
+	}
+	compatibility := c.compatibilitySnapshot()
+	if !compatibility.Capabilities.ConfigureSession {
+		return newCompatibilityError(ErrUnsupportedCapability, "configure-session", compatibility.FlinkVersion, compatibility.ReleaseLine, compatibility.APIVersion, nil)
 	}
 	release, err := c.acquireSessionSetup(ctx, sessionHandle)
 	if err != nil {
@@ -141,10 +147,17 @@ func (c *GatewayClient) configureSessionRequest(ctx context.Context, sessionHand
 	}
 	defer cancel()
 
-	// Flink 1.20.4는 양수 executionTimeout을 지원하지 않으므로 field 자체를 생략한다.
 	body := struct {
-		Statement string `json:"statement"`
-	}{statement}
+		Statement        string `json:"statement"`
+		ExecutionTimeout *int64 `json:"executionTimeout,omitempty"`
+	}{Statement: statement}
+	if c.selectedCapabilities().WireExecutionTimeout && executionTimeout > 0 {
+		milliseconds := executionTimeout.Milliseconds()
+		if milliseconds == 0 {
+			milliseconds = 1
+		}
+		body.ExecutionTimeout = &milliseconds
+	}
 	target, _ := c.endpointURL(true, "/sessions/"+pathSegment(sessionHandle)+"/configure-session")
 	requestCtx = withServerMessageRedaction(requestCtx, redaction)
 	_, err := c.doJSON(requestCtx, http.MethodPost, target, body, nil, false)
@@ -163,16 +176,22 @@ func (c *GatewayClient) configureSessionRequest(ctx context.Context, sessionHand
 	}
 }
 
-// CompleteStatement는 v2 이상에서 SQL 자동완성 후보를 반환한다.
+// CompleteStatement는 현재 profile과 protocol이 지원할 때 SQL 자동완성 후보를 반환한다.
 func (c *GatewayClient) CompleteStatement(ctx context.Context, sessionHandle, statement string, position int) ([]string, error) {
 	if err := validateSessionHandle(sessionHandle); err != nil {
 		return nil, err
 	}
-	if apiVersionNumber(c.cfg.APIVersion) < 2 {
-		return nil, fmt.Errorf("%w: complete-statement requires v2 or newer", ErrUnsupportedAPI)
+	if configured, known, err := c.configuredCompatibility(); err != nil {
+		return nil, err
+	} else if known && !configured.Capabilities.CompleteStatement {
+		return nil, newCompatibilityError(ErrUnsupportedCapability, "complete-statement", configured.FlinkVersion, configured.ReleaseLine, configured.APIVersion, nil)
 	}
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return nil, err
+	}
+	compatibility := c.compatibilitySnapshot()
+	if !compatibility.Capabilities.CompleteStatement {
+		return nil, newCompatibilityError(ErrUnsupportedCapability, "complete-statement", compatibility.FlinkVersion, compatibility.ReleaseLine, compatibility.APIVersion, nil)
 	}
 	target, _ := c.endpointURL(true, "/sessions/"+pathSegment(sessionHandle)+"/complete-statement")
 	query := target.Query()
@@ -182,7 +201,8 @@ func (c *GatewayClient) CompleteStatement(ctx context.Context, sessionHandle, st
 	var response struct {
 		Candidates []string `json:"candidates"`
 	}
-	if _, err := c.doJSON(ctx, http.MethodGet, target, nil, &response, true); err != nil {
+	requestCtx := withServerMessageRedaction(ctx, serverMessageRedaction{fragments: []string{statement}})
+	if _, err := c.doJSON(requestCtx, http.MethodGet, target, nil, &response, true); err != nil {
 		return nil, err
 	}
 	return response.Candidates, nil

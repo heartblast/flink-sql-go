@@ -22,12 +22,19 @@ func (c *GatewayClient) ExecuteStatement(ctx context.Context, sessionHandle stri
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return nil, err
 	}
-	// Flink 1.20.4는 executionTimeout이 양수이면 statement를 제출하기 전에
-	// UnsupportedOperationException을 반환한다. 전체 실행 제한은 상위 context에서 적용한다.
+	capabilities := c.selectedCapabilities()
 	body := struct {
-		Statement       string            `json:"statement"`
-		ExecutionConfig map[string]string `json:"executionConfig,omitempty"`
-	}{req.Statement, req.ExecutionConfig}
+		Statement        string            `json:"statement"`
+		ExecutionConfig  map[string]string `json:"executionConfig,omitempty"`
+		ExecutionTimeout *int64            `json:"executionTimeout,omitempty"`
+	}{Statement: req.Statement, ExecutionConfig: req.ExecutionConfig}
+	if capabilities.WireExecutionTimeout && req.ExecutionTimeout > 0 {
+		milliseconds := req.ExecutionTimeout.Milliseconds()
+		if milliseconds == 0 {
+			milliseconds = 1
+		}
+		body.ExecutionTimeout = &milliseconds
+	}
 	target, _ := c.endpointURL(true, "/sessions/"+pathSegment(sessionHandle)+"/statements")
 	endpoint := sanitizeEndpointPath(target.EscapedPath())
 	c.observeLifecycle(ctx, Observation{
@@ -39,7 +46,8 @@ func (c *GatewayClient) ExecuteStatement(ctx context.Context, sessionHandle stri
 	var response struct {
 		Handle string `json:"operationHandle"`
 	}
-	if _, err := c.doJSON(ctx, http.MethodPost, target, body, &response, false); err != nil {
+	requestCtx := withServerMessageRedaction(ctx, serverMessageRedaction{redactAll: true})
+	if _, err := c.doJSON(requestCtx, http.MethodPost, target, body, &response, false); err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && statementOutcomeIsUnknown(apiErr) {
 			unknown := &ExecutionOutcomeUnknownError{
@@ -148,11 +156,13 @@ func (c *GatewayClient) FetchResults(ctx context.Context, sessionHandle, operati
 	if !rowFormat.valid() {
 		return nil, fmt.Errorf("flinksqlgateway: unsupported row format %q", rowFormat)
 	}
-	if apiVersionNumber(c.cfg.APIVersion) == 1 && rowFormat != RowFormatJSON {
-		return nil, fmt.Errorf("%w: PLAIN_TEXT results require v2 or newer", ErrUnsupportedAPI)
+	capabilities := c.selectedCapabilities()
+	if !capabilities.RowFormat && rowFormat != RowFormatJSON {
+		compatibility := c.compatibilitySnapshot()
+		return nil, newCompatibilityError(ErrUnsupportedCapability, "PLAIN_TEXT result", compatibility.FlinkVersion, compatibility.ReleaseLine, compatibility.APIVersion, nil)
 	}
 	target, _ := c.endpointURL(true, fmt.Sprintf("%s/result/%d", operationRoute(sessionHandle, operationHandle), token))
-	if apiVersionNumber(c.cfg.APIVersion) >= 2 {
+	if capabilities.RowFormat {
 		query := target.Query()
 		query.Set("rowFormat", string(rowFormat))
 		target.RawQuery = query.Encode()

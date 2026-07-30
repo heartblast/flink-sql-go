@@ -18,6 +18,20 @@ var (
 	ErrResultLimit = errors.New("flink sql result limit exceeded")
 	// ErrUnsupportedAPI는 server 또는 선택한 protocol이 필요한 API를 지원하지 않음을 나타낸다.
 	ErrUnsupportedAPI = errors.New("unsupported sql gateway api version")
+	// ErrInvalidFlinkVersion은 /info의 Flink 제품 버전을 안전하게 파싱할 수 없음을 나타낸다.
+	ErrInvalidFlinkVersion = errors.New("invalid Flink version")
+	// ErrUnsupportedFlinkVersion은 파싱된 release line에 등록된 profile이 없음을 나타낸다.
+	ErrUnsupportedFlinkVersion = errors.New("unsupported Flink version")
+	// ErrNoCompatibleAPIVersion은 server와 profile 사이에 선택 가능한 REST API 버전이 없음을 나타낸다.
+	ErrNoCompatibleAPIVersion = fmt.Errorf("%w: no compatible SQL Gateway API version", ErrUnsupportedAPI)
+	// ErrExplicitAPIVersionUnsupportedByServer는 명시한 API 버전을 server가 광고하지 않음을 나타낸다.
+	ErrExplicitAPIVersionUnsupportedByServer = fmt.Errorf("%w: explicit version is not advertised by server", ErrUnsupportedAPI)
+	// ErrExplicitAPIVersionUnsupportedByProfile은 명시한 API 버전을 release profile이 허용하지 않음을 나타낸다.
+	ErrExplicitAPIVersionUnsupportedByProfile = fmt.Errorf("%w: explicit version is not supported by profile", ErrUnsupportedAPI)
+	// ErrUnsupportedCapability는 현재 release와 protocol 조합이 요청 기능을 제공하지 않음을 나타낸다.
+	ErrUnsupportedCapability = fmt.Errorf("%w: unsupported capability", ErrUnsupportedAPI)
+	// ErrCompatibilityDetection은 /info 또는 /api_versions 감지 요청이 완료되지 않았음을 나타낸다.
+	ErrCompatibilityDetection = errors.New("Flink compatibility detection failed")
 	// ErrResponseTooLarge는 응답이 MaxResponseBytes를 초과했음을 나타낸다.
 	ErrResponseTooLarge = errors.New("flink sql gateway response too large")
 	// ErrUnsafeNextResultURI는 paging URI가 Gateway origin 밖을 가리켰음을 나타낸다.
@@ -36,6 +50,59 @@ var (
 	// ErrSessionClosed는 고수준 session wrapper가 로컬에서 종료되었음을 나타낸다.
 	ErrSessionClosed = errors.New("flink sql session is closed")
 )
+
+// CompatibilityError는 Flink release 감지와 REST API 선택 실패를 typed context와 함께
+// 보고한다. SQL, 인증 header, URL query는 보관하지 않는다.
+type CompatibilityError struct {
+	Kind         error
+	Operation    string
+	FlinkVersion string
+	ReleaseLine  ReleaseLine
+	APIVersion   string
+	Cause        error
+}
+
+// Error는 compatibility 선택에 필요한 비민감 metadata만 포함한다.
+func (e *CompatibilityError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	message := "flink sql gateway compatibility failed"
+	if e.Operation != "" {
+		message += ": " + e.Operation
+	}
+	if e.FlinkVersion != "" {
+		message += " flink=" + sanitizeServerMessage(e.FlinkVersion)
+	}
+	if e.ReleaseLine != "" {
+		message += " release=" + string(e.ReleaseLine)
+	}
+	if e.APIVersion != "" {
+		message += " api=" + e.APIVersion
+	}
+	if e.Kind != nil {
+		message += ": " + e.Kind.Error()
+	}
+	if e.Cause != nil {
+		message += ": " + e.Cause.Error()
+	}
+	return message
+}
+
+// Unwrap은 분류 sentinel과 transport/context 원인을 errors.Is와 errors.As에 모두 제공한다.
+func (e *CompatibilityError) Unwrap() []error {
+	if e == nil {
+		return nil
+	}
+	result := make([]error, 0, 2)
+	if e.Kind != nil {
+		result = append(result, e.Kind)
+	}
+	if e.Cause != nil {
+		result = append(result, e.Cause)
+	}
+	return result
+}
 
 // RequestPhase는 실패 전에 HTTP 요청이 진행된 단계를 나타낸다. Flink의 statement 실행
 // 여부가 아니라 transport 진행 상태를 설명한다.
