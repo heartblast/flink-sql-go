@@ -1,6 +1,6 @@
 # flink-sql-go
 
-Apache Flink 1.20.4 SQL Gateway 전용 Go REST Client입니다. JDBC, JVM, GraalVM, CGO, `database/sql` 없이 표준 `net/http`로 동작합니다.
+Apache Flink 1.20.x와 Flink 2.0.x~2.3.x SQL Gateway의 호환성 profile을 하나의 Go module에서 관리하는 REST Client입니다. JDBC, JVM, GraalVM, CGO, `database/sql` 없이 표준 `net/http`로 동작합니다. 현재 실제 Gateway 검증을 완료한 patch 버전은 Flink 1.20.4이며, Flink 2.0.x~2.3.x profile은 실제 서버 검증 전인 `experimental` 상태입니다.
 
 Go module과 공개 import 경로는 다음과 같습니다.
 
@@ -21,20 +21,17 @@ PowerShell 5.1 이상에서 루트 빌드 스크립트를 실행합니다.
 스크립트는 다음 순서로 실행됩니다.
 
 1. `go.mod`에 선언된 Go 버전과 실제 toolchain 일치 확인
-2. Git tag와 `VERSION`을 이용한 안정 SemVer 및 `FLINK_VERSION` 확인
+2. Git tag와 `VERSION`을 이용한 안정 SemVer 및 `compatibility.yaml` 검증
 3. `go mod verify`, `go mod tidy -diff`, `gofmt`, `go vet`
 4. 단위 테스트와 coverage, 전체 package compile
 5. `govulncheck` symbol scan 및 전체 module graph scan
-6. 라이브러리/Flink 버전 suffix가 포함된 소스 ZIP, build-info, 의존성 목록, SHA-256 생성
+6. Flink 버전 suffix가 없는 소스 ZIP, build-info, compatibility 정보, 의존성 목록, SHA-256 생성
 
-라이브러리 버전 결정 우선순위는 `-Version`, `BUILD_VERSION`, 현재 commit의 정확한 `v*` tag, `VERSION` 순입니다. 기본 빌드는 `-dev`를 붙이지 않으며 현재 기준 산출물 이름은 `flink-sql-go-0.1.5-flink-1.20.4-*`입니다. Git commit과 dirty 상태는 버전 문자열 대신 build-info에 기록됩니다.
+라이브러리 버전 결정 우선순위는 `-Version`, `BUILD_VERSION`, 현재 commit의 정확한 `v*` tag, `VERSION` 순입니다. 기본 빌드는 `-dev`를 붙이지 않으며 현재 기준 산출물 이름은 `flink-sql-go-0.2.0-*`입니다. 하나의 릴리스가 여러 Flink release line을 지원하므로 산출물 이름에 단일 Flink patch suffix를 붙이지 않습니다. Git commit과 dirty 상태는 버전 문자열 대신 build-info에 기록됩니다.
 
 ```powershell
 # 명시적 preview 버전
 .\build.ps1 -Version 0.2.0-rc.1
-
-# 다른 Flink patch release용 별도 검증 빌드
-.\build.ps1 -FlinkVersion 1.20.5
 
 # 깨끗한 worktree와 tag/명시 버전을 요구하는 릴리스 빌드
 .\build.ps1 -Release
@@ -43,17 +40,19 @@ PowerShell 5.1 이상에서 루트 빌드 스크립트를 실행합니다.
 .\build.ps1 -Race
 ```
 
-기본 지원 Flink 버전은 루트 `FLINK_VERSION`에서 관리합니다. CI에서는 `SUPPORTED_FLINK_VERSION` 환경변수로 덮어쓸 수도 있습니다.
+지원 release line, 직접 검증한 patch 버전, REST API 버전과 capability는 루트 `compatibility.yaml`에서 관리합니다. 빌드는 이 manifest를 검증하고 동일 내용을 `flink-sql-go-<version>.compatibility.json`에 기록합니다.
 
 기본 보안 gate는 취약점 또는 scan 오류가 하나라도 있으면 빌드를 실패시킵니다. 조사 목적으로만 비릴리스 빌드에 `-AllowVulnerabilities`를 사용할 수 있으며, 결과 manifest의 `securityGatePassed`는 `false`로 기록됩니다. 릴리스 빌드에서는 이 우회를 허용하지 않습니다.
 
-Go 1.26.5에는 이전 빌드에서 검출된 표준 라이브러리 취약점 `GO-2026-5856`, `GO-2026-4970`의 수정이 포함됩니다. 상세한 빌드·배포 절차는 [docs/build.md](docs/build.md)를 참고하십시오.
+Go 1.26.5에는 이전 빌드에서 검출된 표준 라이브러리 취약점 `GO-2026-5856`, `GO-2026-4970`의 수정이 포함됩니다. 상세한 내용은 [호환성 정책](docs/compatibility.md), [릴리스 정책](docs/release-policy.md), [빌드·배포 절차](docs/build.md)를 참고하십시오.
 
-현재 릴리스의 기능, 호환성, 검증 결과는 [v0.1.5 릴리스 노트](docs/releases/v0.1.5.md)에 정리되어 있습니다.
+멀티 Flink 호환성 모델을 도입한 현재 개발 버전은 `v0.2.0`입니다. 릴리스 전까지 검증되지 않은 2.x patch 버전을 지원 완료로 간주하지 않습니다.
 
 ## 주요 기능
 
-- `/info`, `/api_versions` 조회 및 선택 API 버전의 lazy 검증
+- `/info`와 `/api_versions`를 이용한 Flink release/API 버전 lazy 감지
+- Auto/수동 release profile과 Stable/Highest/Explicit API 선택 정책
+- 선택된 profile과 capability를 조회하는 읽기 전용 Compatibility API
 - 세션 생성·설정 조회·heartbeat·종료
 - v2+ 세션 구성 및 SQL 자동완성
 - SQL 제출, Operation 상태·취소·종료
@@ -92,7 +91,8 @@ import (
 func query(ctx context.Context) error {
     client, err := flinksqlgateway.NewClient(flinksqlgateway.Config{
         BaseURL:             "https://flink-gateway.internal:8083",
-        APIVersion:          "v3",
+        CompatibilityMode:   flinksqlgateway.CompatibilityAuto,
+        APIVersionPolicy:    flinksqlgateway.APIVersionStable,
         RequestTimeout:      10 * time.Second,
         ExecutionTimeout:    30 * time.Second,
         PollInterval:        300 * time.Millisecond,
@@ -106,6 +106,15 @@ func query(ctx context.Context) error {
         return err
     }
     defer client.Close()
+
+    // NewClient는 network를 호출하지 않습니다. 이 호출 또는 최초 versioned 요청에서
+    // /info -> /api_versions 순서로 compatibility를 감지합니다.
+    compatibility, err := client.GetCompatibilityInfo(ctx)
+    if err != nil {
+        return err
+    }
+    _ = compatibility.ReleaseLine
+    _ = compatibility.APIVersion
 
     session, err := client.OpenSession(ctx, flinksqlgateway.OpenSessionRequest{
         SessionName: "workspace-user-123",
@@ -146,6 +155,33 @@ func query(ctx context.Context) error {
 ```
 
 원격 저장소의 module path로 변경한 뒤 import 경로도 함께 바꾸면 됩니다.
+
+## Flink 호환성과 API 버전 선택
+
+기본값은 `CompatibilityAuto`와 `APIVersionStable`입니다. `NewClient`는 설정만 검증하고 network를 호출하지 않으며, `GetCompatibilityInfo`, `CheckCompatibility` 또는 최초 versioned 요청이 실행될 때 `/info`로 Flink release line을 감지한 다음 `/api_versions`와 profile의 교집합에서 REST API 버전을 선택합니다.
+
+| Flink release line | 상태 | 직접 검증한 patch | profile REST API | Stable | `executionTimeout` wire |
+| --- | --- | --- | --- | --- | --- |
+| 1.20.x | maintenance | 1.20.4 | v1, v2, v3 | v3 | 사용하지 않음 |
+| 2.0.x | experimental | 없음 | v1, v2, v3, v4 | v3 | profile에서 사용 |
+| 2.1.x | experimental | 없음 | v1, v2, v3, v4 | v3 | profile에서 사용 |
+| 2.2.x | experimental | 없음 | v1, v2, v3, v4 | v3 | profile에서 사용 |
+| 2.3.x | experimental | 없음 | v1, v2, v3, v4 | v3 | profile에서 사용 |
+
+`experimental`은 protocol profile이 구현되었다는 뜻이며 실제 Flink Gateway와의 통합 검증 완료를 뜻하지 않습니다. 운영 지원 판단에는 반드시 `TestedVersions`를 함께 확인하십시오.
+
+release line을 알고 있거나 `/info`를 사용할 수 없는 환경에서는 수동 mode를 지정할 수 있습니다. 수동 mode도 서버가 광고한 REST API를 확인하기 위해 `/api_versions`는 lazy하게 호출합니다.
+
+```go
+client, err := flinksqlgateway.NewClient(flinksqlgateway.Config{
+    BaseURL:            gatewayURL,
+    CompatibilityMode: flinksqlgateway.CompatibilityFlink120,
+    APIVersionPolicy:  flinksqlgateway.APIVersionExplicit,
+    APIVersion:        "v3",
+})
+```
+
+기존 `Config{APIVersion: "v3"}` 형태는 하위 호환성을 위해 `Explicit` 정책으로 해석되며 fallback하지 않습니다. 전체 정책, typed error와 지원 상태 정의는 [docs/compatibility.md](docs/compatibility.md)에 정리되어 있습니다.
 
 ## Managed Session과 직렬 실행
 
@@ -392,7 +428,7 @@ columns, err := client.DescribeTable(ctx, session.Handle, flinksqlgateway.Identi
 plan, err := client.Explain(ctx, session.Handle, "SELECT * FROM orders")
 ```
 
-식별자는 `QuoteIdentifier`로 backtick quoting되며 내부 backtick은 두 번 써서 escape합니다. 알 수 없는 미래 API 버전의 capability는 지원을 추측하지 않고 보수적으로 `false`를 반환합니다.
+식별자는 `QuoteIdentifier`로 backtick quoting되며 내부 backtick은 두 번 써서 escape합니다. Capability는 선택된 release profile과 REST API 버전의 교집합으로 계산하며, 확인되지 않은 기능을 지원한다고 추측하지 않습니다.
 
 ## Changelog Materializer
 
@@ -443,15 +479,15 @@ if err := <-errs; err != nil {
 }
 ```
 
-## Flink 1.20.4 API 특성
+## REST API와 Flink 1.20.4 검증 기준
 
-Flink 1.20.4 소스 태그와 공식 OpenAPI를 기준으로 구현했습니다.
+공통 REST DTO와 Flink 1.20 profile은 Flink 1.20.4 소스 태그와 공식 OpenAPI를 기준으로 구현하고 실제 Gateway에서 검증했습니다. 2.x profile은 v4와 version-specific capability를 표현하지만 아직 실제 2.x Gateway 검증을 완료하지 않았습니다.
 
 | 항목 | 확인 내용 |
 | --- | --- |
-| 지원 버전 | `V1`, `V2`, `V3`; 서버 기본은 `v3` |
+| 1.20 profile API | `V1`, `V2`, `V3`; Stable은 `v3` |
 | 공통 경로 | `/info`, `/api_versions`는 버전 prefix 없음 |
-| 버전 경로 | 나머지는 `/v1/...`, `/v2/...`, `/v3/...` |
+| 버전 경로 | 나머지는 선택된 `/v1/...`~`/v4/...` prefix 사용 |
 | v1 | 기본 세션/Operation/결과 API, 결과는 기본 JSON |
 | v2 | `configure-session`, `complete-statement`, `rowFormat` 추가 |
 | v3 | Materialized Table API 추가(이 모듈 범위 밖) |
@@ -478,7 +514,7 @@ OpenAPI는 결과 body 일부를 `any`로 표시하고 `queryResult`라고 기�
 
 세션 생성, SQL 실행, 세션 구성 SQL, Operation 취소/종료, 세션 종료는 자동 재시도하지 않습니다. 특히 SQL 실행 POST는 응답 유실 시 이미 Job이 제출됐을 수 있으므로 절대 자동 재호출하지 않습니다. 이 경우 `errors.Is(err, flinksqlgateway.ErrExecutionOutcomeUnknown)` 또는 `errors.As`로 상태를 판별할 수 있습니다.
 
-`ExecutionTimeout`은 제출부터 결과 수집까지의 client-side 제한입니다. Flink 1.20.4는 SQL Gateway REST 요청의 양수 `executionTimeout`을 지원하지 않으므로 client는 해당 wire field를 생략하고 context로 제한 시간을 적용합니다.
+`ExecutionTimeout`은 모든 profile에서 제출부터 결과 수집까지의 client-side 제한입니다. Flink 1.20 profile은 SQL Gateway REST 요청의 양수 `executionTimeout`을 지원하지 않으므로 field 자체를 생략합니다. `WireExecutionTimeout` capability가 참인 2.x profile은 같은 제한을 millisecond wire field로도 전송하지만 client-side context 제한은 그대로 유지합니다.
 
 Operation handle을 받은 뒤 context가 취소되면 `CancelOnContextDone` 설정에 따라 별도 cleanup context로 취소를 요청하고, 원래 context 오류를 그대로 반환합니다. 결과 제한 도달 시에는 취소 후 Operation을 닫습니다. 세션 만료 시 새 세션을 몰래 생성하지 않습니다.
 
@@ -502,23 +538,29 @@ go test -race ./...
 
 Windows의 race detector는 검사 도구 실행에 CGO와 C compiler가 필요합니다. 라이브러리 자체는 CGO를 import하거나 링크하지 않습니다.
 
-실제 Flink 1.20.4 SQL Gateway 통합 테스트는 다음 환경변수로 실행합니다.
+현재 실제 검증 대상인 Flink 1.20.4 SQL Gateway 통합 테스트는 다음 환경변수로 실행합니다.
 
 ```powershell
 $env:FLINK_SQL_GATEWAY_URL = 'http://localhost:8083'
-$env:FLINK_SQL_GATEWAY_API_VERSION = 'v3'
+$env:FLINK_TEST_VERSION = '1.20.4'
+$env:FLINK_TEST_RELEASE_LINE = '1.20'
+$env:FLINK_TEST_API_VERSION = 'v3'
 go test -tags=integration ./...
 ```
 
-환경변수가 없으면 integration test는 skip됩니다.
+`FLINK_SQL_GATEWAY_URL`이 없으면 integration test는 skip됩니다. URL을 설정한 경우 실제 `/info` 및 선택 결과가 기대값과 다르면 실패합니다. 기존 `FLINK_SQL_GATEWAY_API_VERSION`은 API 버전의 deprecated fallback으로만 유지됩니다.
+
+Flink 2.0.x~2.3.x는 실제 Gateway 통합 테스트를 통과하기 전까지 `experimental`이며, 문서나 산출물의 `TestedVersions`에는 임의의 patch 버전을 추가하지 않습니다.
 
 ## 현재 범위 밖
 
 - Materialized Table v3 API
+- Deploy Script v4 공개 helper
+- Flink 2.0.x~2.3.x 실제 Gateway 통합 검증
 - reverse-proxy URI rewrite resolver
 - 전체 API version contract CI, SBOM, provenance 자동화
 - 사용자 인증 시스템 및 SQL parser/권한 정책
 - JDBC/JVM/GraalVM/CGO/database/sql
 - Kafka/Elasticsearch 연결 검증과 UI
 
-상세 설계는 [docs/design.md](docs/design.md)를 참고하십시오.
+상세 설계는 [docs/design.md](docs/design.md), 버전 선택과 지원 상태는 [docs/compatibility.md](docs/compatibility.md), 배포 정책은 [docs/release-policy.md](docs/release-policy.md)를 참고하십시오.

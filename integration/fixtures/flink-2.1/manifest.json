@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "releaseLine": "2.1",
+  "flinkVersion": "2.1.0",
+  "apiVersion": "v4",
+  "synthetic": true,
+  "countsAsTestedPatch": false,
+  "provenance": "Synthetic contract derived from the Apache Flink OpenAPI schema; not captured from a live Gateway and not a tested patch version"
+}

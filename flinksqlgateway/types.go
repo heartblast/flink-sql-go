@@ -16,7 +16,7 @@ const (
 	RowFormatPlainText RowFormat = "PLAIN_TEXT"
 )
 
-// valid는 Flink 1.20에서 지원하는 결과 형식인지 확인한다.
+// valid는 client가 알고 있는 결과 형식인지 확인한다.
 func (f RowFormat) valid() bool { return f == RowFormatJSON || f == RowFormatPlainText }
 
 // ResultType은 operation 결과의 준비와 종료 상태를 설명한다.
@@ -90,7 +90,7 @@ func (s OperationStatus) Terminal() bool {
 // Successful은 알려진 성공 종료 상태인지 반환한다.
 func (s OperationStatus) Successful() bool { return s == OperationFinished }
 
-// GatewayInfo는 /info endpoint가 반환하는 제품 정보이다.
+// GatewayInfo는 /info endpoint가 반환하며 Auto compatibility 감지에 사용하는 제품 정보이다.
 type GatewayInfo struct {
 	ProductName string `json:"productName"`
 	Version     string `json:"version"`
@@ -114,10 +114,9 @@ type Session struct {
 // ExecuteStatementRequest는 SQL 종류를 추측하지 않고 statement와 실행 설정을 전달한다.
 type ExecuteStatementRequest struct {
 	Statement string `json:"statement"`
-	// ExecutionTimeout은 source compatibility를 위해 유지한다.
-	// Deprecated: Flink 1.20.4는 REST executionTimeout을 지원하지 않으므로 이 값은 전송하지 않는다.
-	// 제출 요청은 context 또는 Config.RequestTimeout으로, 전체 고수준 실행은
-	// ExecuteOptions.ExecutionTimeout으로 제한한다.
+	// ExecutionTimeout은 선택된 profile의 WireExecutionTimeout이 참일 때 millisecond wire
+	// field로 전송한다. Flink 1.20 profile에서는 field를 생략하며 저수준 제출 제한은 호출자
+	// context 또는 Config.RequestTimeout으로 적용한다.
 	ExecutionTimeout time.Duration     `json:"-"`
 	ExecutionConfig  map[string]string `json:"executionConfig,omitempty"`
 }
@@ -167,7 +166,7 @@ type LogicalTypeField struct {
 	Description string       `json:"description,omitempty"`
 }
 
-// ColumnInfo는 Flink 1.20 결과의 실제 column 표현이다.
+// ColumnInfo는 SQL Gateway 결과의 실제 column 표현을 보존한다.
 type ColumnInfo struct {
 	Name        string      `json:"name"`
 	LogicalType LogicalType `json:"logicalType"`
@@ -184,7 +183,7 @@ type Row struct {
 	Fields []json.RawMessage `json:"fields"`
 }
 
-// ResultInfo는 Flink 1.20이 직렬화한 실제 결과 payload이다.
+// ResultInfo는 SQL Gateway가 직렬화한 실제 결과 payload이다.
 type ResultInfo struct {
 	Columns   []ColumnInfo `json:"columns"`
 	RowFormat RowFormat    `json:"rowFormat"`
@@ -234,6 +233,7 @@ func (p *ResultPage) UnmarshalJSON(data []byte) error {
 }
 
 // ExecuteOptions는 메모리에 수집하는 실행의 client-side 시간, row와 polling 상한을 지정한다.
+// ExecutionTimeout은 모든 profile에서 context 제한으로 적용되며 capability가 허용하면 wire로도 전송된다.
 type ExecuteOptions struct {
 	ExecutionConfig  map[string]string
 	ExecutionTimeout time.Duration

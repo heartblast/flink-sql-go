@@ -425,6 +425,9 @@ func TestNewClientValidationAndSecurity(t *testing.T) {
 
 func newTestClient(t *testing.T, cfg Config) *GatewayClient {
 	t.Helper()
+	if cfg.CompatibilityMode == "" {
+		cfg.CompatibilityMode = CompatibilityFlink120
+	}
 	client, err := NewClient(cfg)
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)

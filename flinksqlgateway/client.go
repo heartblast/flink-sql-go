@@ -2,10 +2,9 @@ package flinksqlgateway
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 )
@@ -76,7 +75,9 @@ type GatewayClient struct {
 
 	versionMu      sync.Mutex
 	versionChecked bool
+	versionCall    *compatibilityCheckCall
 	versionErr     error
+	compatibility  CompatibilityInfo
 
 	stateMu      sync.Mutex
 	sessions     map[string]*sessionRecord
@@ -98,6 +99,14 @@ type sessionRecord struct {
 	createdAt  time.Time
 }
 
+// compatibilityCheckCall은 동시에 시작된 compatibility 검사 호출자가 하나의 일시적
+// 성공 또는 실패 결과를 공유하게 한다. 완료 뒤 시작된 호출만 새 감지를 시도한다.
+type compatibilityCheckCall struct {
+	done            chan struct{}
+	err             error
+	retryForWaiters bool
+}
+
 // snapshot은 호출자가 자유롭게 변경할 수 있는 공개 Session 복사본을 만든다.
 func (s *sessionRecord) snapshot() *Session {
 	if s == nil {
@@ -116,6 +125,9 @@ var _ Client = (*GatewayClient)(nil)
 
 // 컴파일 시 GatewayClient가 기존 Client와 독립적인 setup 계약을 구현하는지 확인한다.
 var _ SessionSetupExecutor = (*GatewayClient)(nil)
+
+// 컴파일 시 GatewayClient가 기존 Client와 분리된 compatibility 조회 계약을 구현하는지 확인한다.
+var _ CompatibilityProvider = (*GatewayClient)(nil)
 
 // NewClient는 설정을 검증하고 재사용 가능한 client를 생성한다. 생성 중에는 네트워크를
 // 호출하지 않으며 첫 versioned 요청에서 APIVersion을 검증한다.
@@ -146,27 +158,62 @@ func NewClient(cfg Config) (*GatewayClient, error) {
 	}, nil
 }
 
-// CheckAPIVersion은 Gateway가 설정된 버전을 광고하는지 확인한다. 성공 결과와 미지원
-// 결과는 반복 요청을 피하도록 저장한다.
+// CheckAPIVersion은 lazy compatibility 감지와 REST API 선택을 수행한다. 성공 결과와
+// 결정적인 미지원 결과는 저장하고 transport 또는 context 실패는 다음 호출에서 재시도한다.
 func (c *GatewayClient) CheckAPIVersion(ctx context.Context) error {
-	c.versionMu.Lock()
-	defer c.versionMu.Unlock()
-	if c.versionChecked {
-		return c.versionErr
+	if _, known, err := c.configuredCompatibility(); known && err != nil {
+		c.versionMu.Lock()
+		if !c.versionChecked {
+			c.versionChecked = true
+			c.versionErr = err
+		}
+		cachedErr := c.versionErr
+		c.versionMu.Unlock()
+		return cachedErr
 	}
-	versions, err := c.getAPIVersions(ctx)
-	if err != nil {
+
+	for {
+		c.versionMu.Lock()
+		if c.versionChecked {
+			err := c.versionErr
+			c.versionMu.Unlock()
+			return err
+		}
+		if call := c.versionCall; call != nil {
+			c.versionMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-call.done:
+				if call.retryForWaiters {
+					continue
+				}
+				return call.err
+			}
+		}
+		call := &compatibilityCheckCall{done: make(chan struct{})}
+		c.versionCall = call
+		c.versionMu.Unlock()
+
+		compatibility, err := c.resolveCompatibility(ctx)
+		ownerContextErr := ctx.Err()
+		c.versionMu.Lock()
+		if err != nil {
+			if !errors.Is(err, ErrCompatibilityDetection) {
+				c.versionChecked = true
+				c.versionErr = err
+			}
+		} else {
+			c.compatibility = compatibility
+			c.versionChecked = true
+		}
+		call.err = err
+		call.retryForWaiters = ownerContextErr != nil && errors.Is(err, ownerContextErr)
+		c.versionCall = nil
+		close(call.done)
+		c.versionMu.Unlock()
 		return err
 	}
-	for _, version := range versions {
-		if strings.EqualFold(version, c.cfg.APIVersion) || strings.EqualFold(version, strings.ToUpper(c.cfg.APIVersion)) {
-			c.versionChecked = true
-			return nil
-		}
-	}
-	c.versionChecked = true
-	c.versionErr = fmt.Errorf("%w: configured=%s advertised=%v", ErrUnsupportedAPI, c.cfg.APIVersion, versions)
-	return c.versionErr
 }
 
 // sessionContext는 정책 검증에 전달할 session 정보를 복사해 내부 상태 변경을 차단한다.

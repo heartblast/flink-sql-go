@@ -1,0 +1,31 @@
+{
+  "resultType": "PAYLOAD",
+  "isQueryResult": true,
+  "jobID": "2123456789abcdef0123456789abcdef",
+  "resultKind": "SUCCESS_WITH_CONTENT",
+  "nextResultUri": "/v4/sessions/contract-session/operations/contract-operation/result/1?rowFormat=JSON",
+  "results": {
+    "columns": [
+      {
+        "name": "id",
+        "logicalType": {"type": "INTEGER", "nullable": false},
+        "comment": null
+      },
+      {
+        "name": "name",
+        "logicalType": {"type": "VARCHAR", "nullable": false, "length": 2147483647},
+        "comment": "fixture value"
+      },
+      {
+        "name": "note",
+        "logicalType": {"type": "VARCHAR", "nullable": true, "futureField": "preserved"},
+        "comment": null
+      }
+    ],
+    "rowFormat": "JSON",
+    "data": [
+      {"kind": "INSERT", "fields": [42, "flink", null]},
+      {"kind": "UPDATE_AFTER", "fields": [43, "flink-next", "value"]}
+    ]
+  }
+}

@@ -138,9 +138,9 @@ func TestCapabilitiesAreVersionSpecificAndFutureConservative(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer server.Close()
-	client := newTestClient(t, Config{BaseURL: server.URL, APIVersion: "v4"})
+	client := newTestClient(t, Config{BaseURL: server.URL, CompatibilityMode: CompatibilityFlink20, APIVersion: "v4"})
 	capabilities, err := client.Capabilities(context.Background())
-	if err != nil || capabilities.APIVersion != "v4" || capabilities.ConfigureSession {
+	if err != nil || capabilities.APIVersion != "v4" || !capabilities.ConfigureSession || !capabilities.DeployScript || !capabilities.WireExecutionTimeout {
 		t.Fatalf("Capabilities() = %+v, %v", capabilities, err)
 	}
 }

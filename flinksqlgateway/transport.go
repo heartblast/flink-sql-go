@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -41,6 +42,103 @@ func withServerMessageRedaction(ctx context.Context, redaction serverMessageReda
 func serverMessageRedactionFromContext(ctx context.Context) serverMessageRedaction {
 	redaction, _ := ctx.Value(serverMessageRedactionContextKey{}).(serverMessageRedaction)
 	return redaction
+}
+
+// requestMessageRedaction은 request별 SQL과 client 공통 header 값을 합쳐 server 반사
+// 메시지와 transport 오류가 오류 또는 Observer로 전달되기 전에 치환하게 한다.
+func (c *GatewayClient) requestMessageRedaction(ctx context.Context, target *url.URL) serverMessageRedaction {
+	source := serverMessageRedactionFromContext(ctx)
+	redaction := serverMessageRedaction{
+		fragments: append([]string(nil), source.fragments...),
+		redactAll: source.redactAll,
+	}
+	for _, value := range c.cfg.Headers {
+		if value != "" {
+			redaction.fragments = append(redaction.fragments, value)
+		}
+	}
+	if target != nil && target.RawQuery != "" {
+		redaction.fragments = append(redaction.fragments, target.String(), target.RawQuery)
+	}
+	return redaction
+}
+
+// sanitizedTransportError는 원래 network 오류의 errors.Is 및 net.Error 분류는 유지하되,
+// query나 secret을 포함할 수 있는 원문 Error와 url.Error를 외부 chain에 노출하지 않는다.
+type sanitizedTransportError struct {
+	message   string
+	cause     error
+	timeout   bool
+	temporary bool
+}
+
+// Error는 redaction과 길이 제한을 적용한 transport 오류 설명을 반환한다.
+func (e *sanitizedTransportError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return e.message
+}
+
+// Is는 원본 오류를 unwrap하지 않고도 sentinel 분류를 유지한다.
+func (e *sanitizedTransportError) Is(target error) bool {
+	return e != nil && errors.Is(e.cause, target)
+}
+
+// Timeout은 원본 net.Error의 timeout 분류를 보존한다.
+func (e *sanitizedTransportError) Timeout() bool {
+	return e != nil && e.timeout
+}
+
+// Temporary는 원본 net.Error의 temporary 분류를 보존한다.
+func (e *sanitizedTransportError) Temporary() bool {
+	return e != nil && e.temporary
+}
+
+// sanitizeTransportError는 요청 URL, SQL 및 header 반사값을 제거한 안전한 오류를 만든다.
+func sanitizeTransportError(cause error, redaction serverMessageRedaction) error {
+	if cause == nil {
+		return nil
+	}
+	if cause == context.Canceled || cause == context.DeadlineExceeded {
+		return cause
+	}
+	message := ""
+	var urlErr *url.Error
+	if errors.As(cause, &urlErr) {
+		inner := "request failed"
+		if urlErr.Err != nil {
+			inner = sanitizeServerMessage(redactServerMessage(urlErr.Err.Error(), redaction))
+		}
+		if inner == "" {
+			inner = "request failed"
+		}
+		message = fmt.Sprintf("%s %q: %s", sanitizeServerMessage(urlErr.Op), sanitizeTransportURL(urlErr.URL), inner)
+	} else {
+		message = sanitizeServerMessage(redactServerMessage(cause.Error(), redaction))
+	}
+	if message == "" {
+		message = "request failed"
+	}
+	sanitized := &sanitizedTransportError{message: message, cause: cause}
+	if netErr, ok := cause.(net.Error); ok {
+		sanitized.timeout = netErr.Timeout()
+		sanitized.temporary = netErr.Temporary()
+	}
+	return sanitized
+}
+
+// sanitizeTransportURL은 url.Error에 포함된 query, fragment, userinfo와 handle 원문을 제거한다.
+func sanitizeTransportURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "********"
+	}
+	path := sanitizeEndpointPath(parsed.EscapedPath())
+	if path == "" {
+		return "/"
+	}
+	return path
 }
 
 const (
@@ -80,7 +178,7 @@ func (c *GatewayClient) endpointURL(versioned bool, route string) (*url.URL, err
 	base := strings.TrimRight(c.baseURL.String(), "/")
 	prefix := ""
 	if versioned {
-		prefix = "/" + c.cfg.APIVersion
+		prefix = "/" + c.selectedAPIVersion()
 	}
 	return url.Parse(base + prefix + "/" + strings.TrimLeft(route, "/"))
 }
@@ -192,6 +290,7 @@ func (c *GatewayClient) doJSONOnce(
 		},
 	}
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	redaction := c.requestMessageRedaction(req.Context(), target)
 
 	started := time.Now()
 	resp, err := c.httpClient.Do(req)
@@ -200,6 +299,7 @@ func (c *GatewayClient) doJSONOnce(
 		if requestCtx.Err() != nil {
 			cause = requestCtx.Err()
 		}
+		cause = sanitizeTransportError(cause, redaction)
 		apiErr := &APIError{
 			Method:       method,
 			Endpoint:     endpoint,
@@ -228,7 +328,7 @@ func (c *GatewayClient) doJSONOnce(
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		apiErr := c.decodeAPIErrorWithRedaction(method, target, resp.StatusCode, data, serverMessageRedactionFromContext(req.Context()))
+		apiErr := c.decodeAPIErrorWithRedaction(method, target, resp.StatusCode, data, redaction)
 		apiErr.RequestPhase = ResponseReceived
 		c.observe(ctx, RequestObservation{Method: method, Endpoint: endpoint, StatusCode: resp.StatusCode, Duration: time.Since(started), Err: apiErr})
 		return responseBytes, apiErr.Retryable, apiErr

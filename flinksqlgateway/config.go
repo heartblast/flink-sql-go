@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	// DefaultAPIVersion은 Flink 1.20.4 client가 기본으로 선택하는 REST API 버전이다.
+	// DefaultAPIVersion은 각 release profile의 stable 정책이 우선 선택하는 REST API 버전이다.
 	DefaultAPIVersion = "v3"
 
 	// 다음 값들은 호출자가 설정을 생략할 때 자원 사용을 제한하는 기본값이다.
@@ -25,14 +25,19 @@ const (
 	defaultStreamBuffer      = 16
 	defaultObserverTimeout   = 100 * time.Millisecond
 	defaultObserverInFlight  = 16
-	defaultUserAgent         = "flink-sql-go/0.1"
+	defaultUserAgent         = "flink-sql-go/" + SourceVersion
 )
 
-// Config는 Flink SQL Gateway client의 연결, 실행과 자원 제한을 설정한다.
-// 시간 값은 time.Duration을 사용하며 ExecutionTimeout은 고수준 실행의 전체 client-side
-// 제한 시간으로 적용한다. Flink 1.20.4가 지원하지 않는 REST executionTimeout으로 전송하지 않는다.
+// Config는 Flink SQL Gateway client의 연결, compatibility, 실행과 자원 제한을 설정한다.
+// 시간 값은 time.Duration을 사용하며 ExecutionTimeout은 항상 고수준 실행의 client-side
+// 제한으로 적용되고 선택 profile이 허용할 때만 REST executionTimeout으로도 전송된다.
 type Config struct {
-	BaseURL    string
+	BaseURL string
+	// CompatibilityMode는 auto 감지 또는 명시적 Flink release line을 선택한다. 빈 값은 auto이다.
+	CompatibilityMode CompatibilityMode
+	// APIVersionPolicy는 공통 REST API 버전의 선택 규칙이다. 빈 값은 APIVersion이 없으면 stable이다.
+	APIVersionPolicy APIVersionPolicy
+	// APIVersion은 explicit 정책에서 사용할 REST API 버전이다. 기존처럼 이 값만 지정해도 explicit으로 해석한다.
 	APIVersion string
 	HTTPClient *http.Client
 	// OwnHTTPTransport는 주입된 HTTP client transport의 idle connection을 Close가
@@ -88,7 +93,25 @@ func (cfg Config) normalize() (Config, *url.URL, *http.Client, error) {
 	}
 	base.Path = strings.TrimRight(base.Path, "/")
 
-	version, err := normalizeVersion(cfg.APIVersion)
+	mode, err := normalizeCompatibilityMode(cfg.CompatibilityMode)
+	if err != nil {
+		return Config{}, nil, nil, err
+	}
+	cfg.CompatibilityMode = mode
+
+	rawAPIVersion := strings.TrimSpace(cfg.APIVersion)
+	policy, err := normalizeAPIVersionPolicy(cfg.APIVersionPolicy, rawAPIVersion != "")
+	if err != nil {
+		return Config{}, nil, nil, err
+	}
+	cfg.APIVersionPolicy = policy
+	if policy == APIVersionExplicit && rawAPIVersion == "" {
+		return Config{}, nil, nil, fmt.Errorf("flinksqlgateway: APIVersion is required for explicit policy")
+	}
+	if policy != APIVersionExplicit && rawAPIVersion != "" {
+		return Config{}, nil, nil, fmt.Errorf("flinksqlgateway: APIVersion may only be set with explicit policy")
+	}
+	version, err := normalizeVersion(rawAPIVersion)
 	if err != nil {
 		return Config{}, nil, nil, err
 	}
@@ -177,6 +200,37 @@ func (cfg Config) normalize() (Config, *url.URL, *http.Client, error) {
 	}
 
 	return cfg, base, &hc, nil
+}
+
+// normalizeCompatibilityMode는 생략된 mode를 auto로 채우고 알려진 release selector만 허용한다.
+func normalizeCompatibilityMode(value CompatibilityMode) (CompatibilityMode, error) {
+	mode := CompatibilityMode(strings.ToLower(strings.TrimSpace(string(value))))
+	if mode == "" {
+		return CompatibilityAuto, nil
+	}
+	switch mode {
+	case CompatibilityAuto, CompatibilityFlink120, CompatibilityFlink20, CompatibilityFlink21, CompatibilityFlink22, CompatibilityFlink23:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("flinksqlgateway: unsupported CompatibilityMode %q", value)
+	}
+}
+
+// normalizeAPIVersionPolicy는 기존 APIVersion 단독 설정을 explicit으로 해석해 하위 호환성을 유지한다.
+func normalizeAPIVersionPolicy(value APIVersionPolicy, hasAPIVersion bool) (APIVersionPolicy, error) {
+	policy := APIVersionPolicy(strings.ToLower(strings.TrimSpace(string(value))))
+	if policy == "" {
+		if hasAPIVersion {
+			return APIVersionExplicit, nil
+		}
+		return APIVersionStable, nil
+	}
+	switch policy {
+	case APIVersionStable, APIVersionHighest, APIVersionExplicit:
+		return policy, nil
+	default:
+		return "", fmt.Errorf("flinksqlgateway: unsupported APIVersionPolicy %q", value)
+	}
 }
 
 // normalizeVersion은 생략된 값과 대소문자를 정규화해 vN 형식의 API 버전을 반환한다.

@@ -121,8 +121,9 @@ func (c *GatewayClient) runExecution(
 	defer cancelExecution()
 
 	operation, err := c.ExecuteStatement(executionCtx, sessionHandle, ExecuteStatementRequest{
-		Statement:       statement,
-		ExecutionConfig: options.ExecutionConfig,
+		Statement:        statement,
+		ExecutionConfig:  options.ExecutionConfig,
+		ExecutionTimeout: executionTimeout,
 	})
 	if err != nil {
 		return nil, err

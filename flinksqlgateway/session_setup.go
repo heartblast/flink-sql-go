@@ -181,11 +181,17 @@ func (c *GatewayClient) ApplySessionSetup(ctx context.Context, sessionHandle str
 	if err := validateSessionHandle(sessionHandle); err != nil {
 		return nil, err
 	}
-	if !capabilitiesForVersion(c.cfg.APIVersion).ConfigureSession {
-		return nil, fmt.Errorf("%w: session setup requires configure-session v2 or newer", ErrUnsupportedAPI)
+	if configured, known, err := c.configuredCompatibility(); err != nil {
+		return nil, err
+	} else if known && !configured.Capabilities.ConfigureSession {
+		return nil, newCompatibilityError(ErrUnsupportedCapability, "session setup", configured.FlinkVersion, configured.ReleaseLine, configured.APIVersion, nil)
 	}
 	if err := c.CheckAPIVersion(ctx); err != nil {
 		return nil, err
+	}
+	compatibility := c.compatibilitySnapshot()
+	if !compatibility.Capabilities.ConfigureSession {
+		return nil, newCompatibilityError(ErrUnsupportedCapability, "session setup", compatibility.FlinkVersion, compatibility.ReleaseLine, compatibility.APIVersion, nil)
 	}
 	return c.applyCompiledSessionSetup(ctx, sessionHandle, steps, options)
 }
@@ -200,8 +206,17 @@ func (c *GatewayClient) OpenSessionWithSetup(ctx context.Context, request OpenSe
 	if err := validateSessionSetupOptions(options); err != nil {
 		return nil, err
 	}
-	if !capabilitiesForVersion(c.cfg.APIVersion).ConfigureSession {
-		return nil, fmt.Errorf("%w: session setup requires configure-session v2 or newer", ErrUnsupportedAPI)
+	if configured, known, err := c.configuredCompatibility(); err != nil {
+		return nil, err
+	} else if known && !configured.Capabilities.ConfigureSession {
+		return nil, newCompatibilityError(ErrUnsupportedCapability, "session setup", configured.FlinkVersion, configured.ReleaseLine, configured.APIVersion, nil)
+	}
+	if err := c.CheckAPIVersion(ctx); err != nil {
+		return nil, err
+	}
+	compatibility := c.compatibilitySnapshot()
+	if !compatibility.Capabilities.ConfigureSession {
+		return nil, newCompatibilityError(ErrUnsupportedCapability, "session setup", compatibility.FlinkVersion, compatibility.ReleaseLine, compatibility.APIVersion, nil)
 	}
 	session, err := c.OpenSession(ctx, request)
 	if err != nil {
