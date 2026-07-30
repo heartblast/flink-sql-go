@@ -4,12 +4,13 @@
 
 `flinksqlgateway`는 Flink 1.20.4 SQL Gateway REST protocol을 담당하는 공개 패키지다. 저수준 REST API 위에 Managed/Serialized Session과 iterator 결과 계층을 제공한다. `flinkrest`는 JobManager REST lifecycle을 별도 패키지로 제공하며 SQL Operation과 Job 취소를 자동 결합하지 않는다. JDBC·인증 시스템·SQL parser는 포함하지 않는다.
 
-명시적 고수준 계층으로 Session Recipe, 타입 Decoder, Metadata/Capability helper를 제공한다. `flinksqlgateway/changelog`는 상태를 보유하는 선택형 materializer로 핵심 REST client와 분리한다.
+명시적 고수준 계층으로 Session Recipe, 선언형 Session Setup, 타입 Decoder, Metadata/Capability helper를 제공한다. `flinksqlgateway/changelog`는 상태를 보유하는 선택형 materializer로 핵심 REST client와 분리한다.
 
 ```text
 Config / Client interface
         |
         +-- session.go       stateful session lifecycle
+        +-- session_setup.go declarative configure-session orchestration
         +-- operation.go     asynchronous operation lifecycle
         +-- result.go        NOT_READY/PAYLOAD/EOS and paging
         +-- poller.go        collect/stream orchestration and cleanup
@@ -40,6 +41,31 @@ OpenAPI의 추상 schema보다 실제 serializer를 우선했다. Decimal·시�
 - `StartHeartbeat`은 handle마다 runner를 하나만 만든다. `CloseSession`은 heartbeat를 먼저 취소하고, 동시 close 호출은 같은 결과를 기다린다.
 
 소유권은 클라이언트가 임의의 사용자 모델을 만들지 않고 `StatementValidator`에 `SessionContext`를 넘겨 상위 서비스가 검사한다.
+
+## 선언형 Session Setup
+
+`SessionSetupPlan`은 catalog, database, table과 최종 current scope를 network 호출 전에 compile한다. 기존 `SessionRecipe`는 `/statements`와 `ExecuteAndWait`를 사용하는 범용 replay로 유지하고, Session Setup은 REST v2+의 `/configure-session`만 사용한다. 기존 `Client`에 메서드를 추가하지 않고 `SessionSetupExecutor`를 별도 interface로 제공해 외부 mock과 wrapper의 compile 호환성을 유지한다.
+
+```text
+CompileSessionSetup (no network)
+        |
+        v
+CREATE CATALOG -> CREATE DATABASE -> CREATE TABLE
+        |
+        v
+USE CATALOG -> USE database
+        |
+        v
+optional read-only metadata verification
+```
+
+- catalog/database/table target은 compile 단계에서 모두 검증하며 CREATE 문은 완전 수식 이름을 사용한다.
+- `TableSetup.Statement`는 완전한 SQL이 아니라 library가 생성한 target 뒤의 definition만 허용한다. SQL parser나 정규식 기반 객체명 추측은 하지 않는다.
+- option key를 정렬하고 식별자는 backtick, option 문자열은 작은따옴표를 두 번 써 escape한다.
+- 같은 session의 `ConfigureSession`과 setup plan은 context-aware gate로 직렬화한다. 다른 session은 병렬로 진행할 수 있다.
+- configure POST는 자동 재시도하지 않고 408, 429, 5xx 또는 response 유실을 `ErrConfigurationOutcomeUnknown`으로 분류한다.
+- metadata 검증은 DDL 적용 뒤 별도 단계이며 `Applied`와 `Verified`를 구분한다. 검증 실패는 DDL 미적용으로 해석하지 않는다.
+- `OpenSessionWithSetup` 실패 cleanup은 제한된 background context로 session만 닫는다. 자동 `DROP` rollback은 하지 않으며 영속 변경 가능성을 결과에 표시한다.
 
 ## Operation과 결과
 
@@ -74,7 +100,7 @@ Operation cancel이 이미 제출된 Flink Job을 항상 취소한다고 가정�
 
 ## 재시도
 
-안전하게 반복 가능한 조회와 heartbeat만 408/429/502/503/504 또는 transport 오류에 최대 1회 재시도한다. SQL 실행, 세션 생성·구성, 취소·종료는 재시도하지 않는다. `APIError.Retryable`은 호출자가 상위 정책을 적용할 때 사용한다.
+안전하게 반복 가능한 조회와 heartbeat만 408/429/502/503/504 또는 transport 오류에 최대 1회 재시도한다. SQL 실행, 세션 생성·구성, Session Setup step, 취소·종료는 재시도하지 않는다. 비멱등 statement 제출은 `ErrExecutionOutcomeUnknown`, session 구성은 `ErrConfigurationOutcomeUnknown`으로 별도 분류한다. `APIError.Retryable`은 호출자가 상위 정책을 적용할 때 사용한다.
 
 ## 보안
 
@@ -83,6 +109,7 @@ Operation cancel이 이미 제출된 Flink Job을 항상 취소한다고 가정�
 - response body는 `MaxResponseBytes+1`까지만 읽는다.
 - 오류 message는 첫 줄, 최대 512 bytes로 제한해 stack trace 전체 노출을 막는다.
 - Observer에는 query string/SQL/header가 없는 path와 timing만 보낸다.
+- Session Setup 결과와 event에는 SQL이나 option map을 저장하지 않는다. 기본 및 caller 지정 민감 key를 탐지하고 Gateway 반사 오류는 관측 전에 `********`로 치환한다.
 - TLS 검증을 끄는 option은 제공하지 않는다. 필요한 custom Transport는 호출자가 명시적으로 주입한다.
 
 ## 테스트 전략

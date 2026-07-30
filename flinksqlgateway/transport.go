@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,26 @@ const maxExposedErrorBytes = 512
 
 // requestProgress는 transport 오류 시 요청이 server에 도달했을 가능성을 보수적으로 추적한다.
 type requestProgress int32
+
+// serverMessageRedaction은 server가 request SQL이나 secret을 오류에 반사할 때 반환 전에
+// 치환할 값을 전달한다. context 밖으로 원본 값을 보관하지 않는다.
+type serverMessageRedaction struct {
+	fragments []string
+	redactAll bool
+}
+
+type serverMessageRedactionContextKey struct{}
+
+// withServerMessageRedaction은 단일 HTTP 요청 범위에만 server 오류 redaction 규칙을 연결한다.
+func withServerMessageRedaction(ctx context.Context, redaction serverMessageRedaction) context.Context {
+	return context.WithValue(ctx, serverMessageRedactionContextKey{}, redaction)
+}
+
+// serverMessageRedactionFromContext는 transport가 관측 전에 적용할 redaction 규칙을 읽는다.
+func serverMessageRedactionFromContext(ctx context.Context) serverMessageRedaction {
+	redaction, _ := ctx.Value(serverMessageRedactionContextKey{}).(serverMessageRedaction)
+	return redaction
+}
 
 const (
 	// 다음 단계는 요청 미전송부터 응답 body 시작까지 단방향으로만 전이한다.
@@ -207,7 +228,7 @@ func (c *GatewayClient) doJSONOnce(
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		apiErr := c.decodeAPIError(method, target, resp.StatusCode, data)
+		apiErr := c.decodeAPIErrorWithRedaction(method, target, resp.StatusCode, data, serverMessageRedactionFromContext(req.Context()))
 		apiErr.RequestPhase = ResponseReceived
 		c.observe(ctx, RequestObservation{Method: method, Endpoint: endpoint, StatusCode: resp.StatusCode, Duration: time.Since(started), Err: apiErr})
 		return responseBytes, apiErr.Retryable, apiErr
@@ -245,6 +266,11 @@ func readLimited(reader io.Reader, limit int64) ([]byte, error) {
 
 // decodeAPIError는 제한된 server 메시지와 endpoint 문맥을 typed error로 변환한다.
 func (c *GatewayClient) decodeAPIError(method string, target *url.URL, status int, data []byte) *APIError {
+	return c.decodeAPIErrorWithRedaction(method, target, status, data, serverMessageRedaction{})
+}
+
+// decodeAPIErrorWithRedaction은 server 메시지를 분류한 뒤 request별 secret을 관측 전에 제거한다.
+func (c *GatewayClient) decodeAPIErrorWithRedaction(method string, target *url.URL, status int, data []byte, redaction serverMessageRedaction) *APIError {
 	var payload struct {
 		Code    string   `json:"code"`
 		Message string   `json:"message"`
@@ -262,12 +288,13 @@ func (c *GatewayClient) decodeAPIError(method string, target *url.URL, status in
 	if message == "" {
 		message = string(data)
 	}
-	message = sanitizeServerMessage(message)
+	classificationMessage := sanitizeServerMessage(message)
+	message = sanitizeServerMessage(redactServerMessage(message, redaction))
 
 	retryable := status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
 	var kind error
 	lowerPath := strings.ToLower(target.EscapedPath())
-	lowerMessage := strings.ToLower(message)
+	lowerMessage := strings.ToLower(classificationMessage)
 	switch {
 	case status == http.StatusGone || strings.Contains(lowerMessage, "session") && strings.Contains(lowerMessage, "expired"):
 		kind = ErrSessionExpired
@@ -284,11 +311,41 @@ func (c *GatewayClient) decodeAPIError(method string, target *url.URL, status in
 		Method:     method,
 		Endpoint:   sanitizeEndpointPath(target.EscapedPath()),
 		StatusCode: status,
-		Code:       payload.Code,
+		Code:       sanitizeServerMessage(redactServerMessage(payload.Code, redaction)),
 		Message:    message,
 		Retryable:  retryable,
 		Cause:      kind,
 	}
+}
+
+// redactServerMessage는 긴 값을 먼저 치환해 서로 겹치는 secret도 원문이 남지 않게 한다.
+// redactAll은 raw table DDL처럼 개별 secret을 안전하게 추출할 수 없는 경우에 사용한다.
+func redactServerMessage(message string, redaction serverMessageRedaction) string {
+	if message == "" {
+		return ""
+	}
+	if redaction.redactAll {
+		return "********"
+	}
+	fragments := make([]string, 0, len(redaction.fragments))
+	seen := make(map[string]struct{}, len(redaction.fragments))
+	for _, fragment := range redaction.fragments {
+		if fragment == "" {
+			continue
+		}
+		if _, exists := seen[fragment]; exists {
+			continue
+		}
+		seen[fragment] = struct{}{}
+		fragments = append(fragments, fragment)
+	}
+	sort.Slice(fragments, func(left, right int) bool {
+		return len(fragments[left]) > len(fragments[right])
+	})
+	for _, fragment := range fragments {
+		message = strings.ReplaceAll(message, fragment, "********")
+	}
+	return message
 }
 
 // sanitizeEndpointPath는 관측값과 오류에 포함된 session 및 operation handle을 마스킹한다.

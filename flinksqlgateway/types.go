@@ -354,6 +354,16 @@ const (
 	ObservationStatementCompleted ObservationEvent = "StatementCompleted"
 	// ObservationStatementFailed는 statement 제출 또는 실행 실패 event이다.
 	ObservationStatementFailed ObservationEvent = "StatementFailed"
+	// ObservationSessionSetupStepApplying은 configure-session step 전송 직전 event이다.
+	ObservationSessionSetupStepApplying ObservationEvent = "SessionSetupStepApplying"
+	// ObservationSessionSetupStepApplied는 configure-session 성공 응답을 확인한 event이다.
+	ObservationSessionSetupStepApplied ObservationEvent = "SessionSetupStepApplied"
+	// ObservationSessionSetupStepVerified는 setup 객체의 metadata 검증 성공 event이다.
+	ObservationSessionSetupStepVerified ObservationEvent = "SessionSetupStepVerified"
+	// ObservationSessionSetupStepFailed는 setup 적용 또는 metadata 검증 실패 event이다.
+	ObservationSessionSetupStepFailed ObservationEvent = "SessionSetupStepFailed"
+	// ObservationSessionSetupStepOutcomeUnknown은 setup POST 결과를 판단할 수 없는 event이다.
+	ObservationSessionSetupStepOutcomeUnknown ObservationEvent = "SessionSetupStepOutcomeUnknown"
 	// ObservationOperationCanceled는 operation 취소 요청 결과 event이다.
 	ObservationOperationCanceled ObservationEvent = "OperationCanceled"
 	// ObservationOperationClosed는 operation 자원 종료 결과 event이다.
@@ -379,6 +389,9 @@ type Observation struct {
 	Error           error
 	PreviousHealth  SessionHealth
 	CurrentHealth   SessionHealth
+	SetupStepIndex  int
+	SetupStepKind   SessionSetupStepKind
+	SetupTarget     Identifier
 }
 
 // LifecycleObserver는 선택적인 고수준 telemetry를 받는다. 별도 interface로 정의하여

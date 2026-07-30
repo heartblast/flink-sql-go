@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -134,6 +135,95 @@ func TestExecuteStatementHTTPStatusClassification(t *testing.T) {
 			var apiErr *APIError
 			if !errors.As(err, &apiErr) || apiErr.Retryable {
 				t.Fatalf("API error = %#v", apiErr)
+			}
+		})
+	}
+}
+
+func TestConfigureSessionOutcomeUnknownWhenResponseHeaderIsMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api_versions":
+			writeTestJSON(t, w, map[string]any{"versions": []string{"V3"}})
+		case "/v3/sessions/s/configure-session":
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("response writer does not support hijacking")
+			}
+			connection, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Fatalf("Hijack() error = %v", err)
+			}
+			_ = connection.Close()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := newTestClient(t, Config{BaseURL: server.URL})
+
+	err := client.ConfigureSession(context.Background(), "s", "CREATE TABLE secret_table (value STRING)", time.Second)
+	if !errors.Is(err, ErrConfigurationOutcomeUnknown) {
+		t.Fatalf("ConfigureSession() error = %v", err)
+	}
+	var unknown *ConfigurationOutcomeUnknownError
+	if !errors.As(err, &unknown) || unknown.StepIndex != -1 {
+		t.Fatalf("unknown error = %+v", unknown)
+	}
+	if strings.Contains(err.Error(), "secret_table") {
+		t.Fatalf("error leaks SQL: %v", err)
+	}
+}
+
+func TestConfigureSessionPreSendFailureIsNotOutcomeUnknown(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("dial refused")
+	})}
+	client := newTestClient(t, Config{BaseURL: "http://gateway.invalid", HTTPClient: httpClient})
+	client.versionChecked = true
+
+	err := client.ConfigureSession(context.Background(), "s", "USE CATALOG c", time.Second)
+	if err == nil || errors.Is(err, ErrConfigurationOutcomeUnknown) {
+		t.Fatalf("ConfigureSession() error = %v", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.RequestPhase != RequestNotSent {
+		t.Fatalf("API error = %+v", apiErr)
+	}
+}
+
+func TestConfigureSessionHTTPStatusOutcomeClassificationAndNoRetry(t *testing.T) {
+	tests := []struct {
+		status      int
+		wantUnknown bool
+	}{
+		{status: http.StatusBadRequest},
+		{status: http.StatusRequestTimeout, wantUnknown: true},
+		{status: http.StatusTooManyRequests, wantUnknown: true},
+		{status: http.StatusInternalServerError, wantUnknown: true},
+	}
+	for _, test := range tests {
+		t.Run(http.StatusText(test.status), func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api_versions":
+					writeTestJSON(t, w, map[string]any{"versions": []string{"V3"}})
+				case "/v3/sessions/s/configure-session":
+					calls.Add(1)
+					writeTestJSONStatus(t, w, test.status, map[string]string{"message": "configuration failed"})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			client := newTestClient(t, Config{BaseURL: server.URL, PollInterval: time.Millisecond})
+			err := client.ConfigureSession(context.Background(), "s", "USE CATALOG c", time.Second)
+			if errors.Is(err, ErrConfigurationOutcomeUnknown) != test.wantUnknown {
+				t.Fatalf("ConfigureSession() error = %v", err)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("configure calls = %d", calls.Load())
 			}
 		})
 	}

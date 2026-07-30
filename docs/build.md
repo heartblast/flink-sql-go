@@ -27,7 +27,7 @@ go tool govulncheck -version
 3. 현재 HEAD를 가리키는 `v1.2.3` 형식 tag
 4. `VERSION`
 
-기본 빌드도 `VERSION`의 안정 버전(현재 `0.1.4`)을 사용하고 `-dev`를 자동 추가하지 않는다. commit과 dirty 여부는 build-info에서 추적한다. 모든 version은 SemVer 2.0.0 검증을 통과해야 한다.
+기본 빌드도 `VERSION`의 안정 버전(현재 `0.1.5`)을 사용하고 `-dev`를 자동 추가하지 않는다. commit과 dirty 여부는 build-info에서 추적한다. 모든 version은 SemVer 2.0.0 검증을 통과해야 한다.
 
 지원 Flink version 우선순위:
 
@@ -35,7 +35,7 @@ go tool govulncheck -version
 2. `$env:SUPPORTED_FLINK_VERSION`
 3. 루트 `FLINK_VERSION`
 
-배포 산출물에는 `-flink-<version>` suffix가 붙는다. 예: `flink-sql-go-0.1.4-flink-1.20.4-source.zip`.
+배포 산출물에는 `-flink-<version>` suffix가 붙는다. 예: `flink-sql-go-0.1.5-flink-1.20.4-source.zip`.
 
 빌드 중 다음 linker metadata가 주입된다.
 
@@ -50,7 +50,7 @@ go tool govulncheck -version
 ## 릴리스 정책
 
 ```powershell
-git tag -a v0.1.4 -m "v0.1.4"
+git tag -a v0.1.5 -m "v0.1.5"
 .\build.ps1 -Release
 ```
 
@@ -63,7 +63,7 @@ git tag -a v0.1.4 -m "v0.1.4"
 CI에서 version을 주입하려면 다음처럼 실행할 수 있다.
 
 ```powershell
-$env:BUILD_VERSION = '0.1.4'
+$env:BUILD_VERSION = '0.1.5'
 .\build.ps1 -Release
 ```
 
