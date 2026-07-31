@@ -56,6 +56,8 @@ Go 1.26.5에는 이전 빌드에서 검출된 표준 라이브러리 취약점 `
 - 세션 생성·설정 조회·heartbeat·종료
 - v2+ 세션 구성 및 SQL 자동완성
 - SQL 제출, Operation 상태·취소·종료
+- REST v3 Materialized Table refresh와 기존 Operation lifecycle 연계
+- REST v4 Application Mode SQL Script/Script URI 배포
 - `NOT_READY` → `PAYLOAD` → `EOS` 결과 paging
 - JSON/PLAIN_TEXT(v2+) 결과와 모든 RowKind 보존
 - 수집형 `ExecuteAndWait`와 bounded channel형 `StreamResults`
@@ -160,13 +162,24 @@ func query(ctx context.Context) error {
 
 기본값은 `CompatibilityAuto`와 `APIVersionStable`입니다. `NewClient`는 설정만 검증하고 network를 호출하지 않으며, `GetCompatibilityInfo`, `CheckCompatibility` 또는 최초 versioned 요청이 실행될 때 `/info`로 Flink release line을 감지한 다음 `/api_versions`와 profile의 교집합에서 REST API 버전을 선택합니다.
 
-| Flink release line | 상태 | 직접 검증한 patch | profile REST API | Stable | `executionTimeout` wire |
-| --- | --- | --- | --- | --- | --- |
-| 1.20.x | maintenance | 1.20.4 | v1, v2, v3 | v3 | 사용하지 않음 |
-| 2.0.x | experimental | 없음 | v1, v2, v3, v4 | v3 | profile에서 사용 |
-| 2.1.x | experimental | 없음 | v1, v2, v3, v4 | v3 | profile에서 사용 |
-| 2.2.x | experimental | 없음 | v1, v2, v3, v4 | v3 | profile에서 사용 |
-| 2.3.x | experimental | 없음 | v1, v2, v3, v4 | v3 | profile에서 사용 |
+| Flink release line | 상태 | 직접 검증한 patch | profile REST API | Stable |
+| --- | --- | --- | --- | --- |
+| 1.20.x | maintenance | 1.20.4 | v1, v2, v3 | v3 |
+| 2.0.x | experimental | 없음 | v1, v2, v3, v4 | v3 |
+| 2.1.x | experimental | 없음 | v1, v2, v3, v4 | v3 |
+| 2.2.x | experimental | 없음 | v1, v2, v3, v4 | v3 |
+| 2.3.x | experimental | 없음 | v1, v2, v3, v4 | v3 |
+
+REST API 번호는 누적 기능 번호가 아니다. Flink 2.3.0의 실제 `MessageHeaders`와 v1~v4 OpenAPI를 기준으로 한 protocol descriptor는 다음과 같다.
+
+| API | Configure/Complete/RowFormat | Materialized Table refresh | Deploy Script | 2.3 `executionTimeout` wire |
+| --- | --- | --- | --- | --- |
+| v1 | 아니요 | 아니요 | 아니요 | 예 |
+| v2 | 예 | 아니요 | 아니요 | 예 |
+| v3 | 예 | 예 | 아니요 | 예 |
+| v4 | 예 | 아니요 | 예 | 예 |
+
+release capability와 protocol descriptor의 교집합이 최종 capability다. 따라서 Flink 1.20 profile은 release quirk 때문에 `executionTimeout`을 계속 생략한다.
 
 `experimental`은 protocol profile이 구현되었다는 뜻이며 실제 Flink Gateway와의 통합 검증 완료를 뜻하지 않습니다. 운영 지원 판단에는 반드시 `TestedVersions`를 함께 확인하십시오.
 
@@ -182,6 +195,70 @@ client, err := flinksqlgateway.NewClient(flinksqlgateway.Config{
 ```
 
 기존 `Config{APIVersion: "v3"}` 형태는 하위 호환성을 위해 `Explicit` 정책으로 해석되며 fallback하지 않습니다. 전체 정책, typed error와 지원 상태 정의는 [docs/compatibility.md](docs/compatibility.md)에 정리되어 있습니다.
+
+## Flink 2.3 Materialized Table과 Script 배포
+
+Stable 정책은 v3를 선택하므로 Materialized Table refresh에 적합하다.
+
+```go
+v3Client, err := flinksqlgateway.NewClient(flinksqlgateway.Config{
+    BaseURL:            gatewayURL,
+    CompatibilityMode: flinksqlgateway.CompatibilityFlink23,
+    APIVersionPolicy:  flinksqlgateway.APIVersionStable,
+})
+if err != nil {
+    return err
+}
+defer v3Client.Close()
+
+operation, err := v3Client.RefreshMaterializedTable(
+    ctx,
+    sessionHandle,
+    "catalog_name.database_name.materialized_table_name",
+    flinksqlgateway.RefreshMaterializedTableRequest{
+        Periodic:         false,
+        StaticPartitions: map[string]string{"ds": "2026-07-31"},
+        ExecutionConfig:  map[string]string{"execution.runtime-mode": "batch"},
+    },
+)
+if err != nil {
+    return err
+}
+status, err := v3Client.GetOperationStatus(ctx, operation.SessionHandle, operation.Handle)
+```
+
+Highest 정책은 Flink 2.3에서 v4를 선택한다. 명확한 운영 설정을 원하면 `APIVersionExplicit`과 `APIVersion: "v4"`를 사용해도 된다.
+
+```go
+v4Client, err := flinksqlgateway.NewClient(flinksqlgateway.Config{
+    BaseURL:            gatewayURL,
+    CompatibilityMode: flinksqlgateway.CompatibilityFlink23,
+    APIVersionPolicy:  flinksqlgateway.APIVersionHighest,
+})
+if err != nil {
+    return err
+}
+defer v4Client.Close()
+
+inline, err := v4Client.DeployScript(ctx, sessionHandle, flinksqlgateway.DeployScriptRequest{
+    Script: "SET 'pipeline.name' = 'application';\nINSERT INTO sink SELECT * FROM source;",
+})
+if err != nil {
+    return err
+}
+_ = inline.ClusterID // opaque cluster identifier이며 JobID로 해석하지 않는다.
+
+fromURI, err := v4Client.DeployScript(ctx, sessionHandle, flinksqlgateway.DeployScriptRequest{
+    ScriptURI: "s3://bucket/sql/application.sql",
+    ExecutionConfig: map[string]string{
+        "kubernetes.cluster-id": "sql-application",
+    },
+})
+```
+
+v4에는 v3 Materialized Table refresh endpoint가 없다. 두 기능이 모두 필요하면 같은 Gateway를 가리키는 v3 client와 v4 client를 명시적으로 분리한다. helper는 선택 API를 내부적으로 바꾸거나 fallback하지 않으며, 미지원 조합은 HTTP 전에 `ErrUnsupportedCapability`로 실패한다. `DeployScript`의 `clusterID`는 Application 배포 식별자일 뿐 Flink JobID와 같다고 가정하지 않으며 SQL Operation 취소와 Job/Application 취소도 자동 결합하지 않는다.
+
+이 라이브러리는 Flink SQL parser가 아니다. `FROM_CHANGELOG`, `TO_CHANGELOG`, Materialized Table DDL/`START_MODE`, `ON CONFLICT`, `USING ARTIFACT`, Process Table Function table argument 같은 Flink 2.3 SQL을 분류·정규화하지 않고 `ExecuteStatementRequest.Statement` 그대로 전송한다.
 
 ## Managed Session과 직렬 실행
 
@@ -479,9 +556,9 @@ if err := <-errs; err != nil {
 }
 ```
 
-## REST API와 Flink 1.20.4 검증 기준
+## REST API와 Flink 1.20.4/2.3.0 구현 기준
 
-공통 REST DTO와 Flink 1.20 profile은 Flink 1.20.4 소스 태그와 공식 OpenAPI를 기준으로 구현하고 실제 Gateway에서 검증했습니다. 2.x profile은 v4와 version-specific capability를 표현하지만 아직 실제 2.x Gateway 검증을 완료하지 않았습니다.
+공통 REST DTO와 Flink 1.20 profile은 Flink 1.20.4 소스 태그와 공식 OpenAPI를 기준으로 구현하고 실제 Gateway에서 검증했습니다. Flink 2.3 endpoint와 요청 body는 `release-2.3.0`의 실제 RequestBody, handler와 MessageHeaders를 OpenAPI v1~v4와 대조해 구현했지만 실제 2.3.0 Gateway 통합 검증은 아직 완료하지 않았습니다.
 
 | 항목 | 확인 내용 |
 | --- | --- |
@@ -490,7 +567,8 @@ if err := <-errs; err != nil {
 | 버전 경로 | 나머지는 선택된 `/v1/...`~`/v4/...` prefix 사용 |
 | v1 | 기본 세션/Operation/결과 API, 결과는 기본 JSON |
 | v2 | `configure-session`, `complete-statement`, `rowFormat` 추가 |
-| v3 | Materialized Table API 추가(이 모듈 범위 밖) |
+| v3 | Materialized Table refresh만 제공; `isPeriodic` canonical key 사용 |
+| v4 | Application Mode Script 배포만 제공; Materialized Table refresh 없음 |
 | Operation 상태 | `INITIALIZED`, `PENDING`, `RUNNING`, `FINISHED`, `CANCELED`, `CLOSED`, `ERROR`, `TIMEOUT` |
 | 결과 | `resultType`, `isQueryResult`, `jobID`, `resultKind`, `results`, `nextResultUri` |
 | 행 | `{"kind":"INSERT","fields":[...]}` 형태 |
@@ -498,10 +576,15 @@ if err := <-errs; err != nil {
 
 OpenAPI는 결과 body 일부를 `any`로 표시하고 `queryResult`라고 기술하는 부분이 있지만, 실제 1.20.4 serializer는 `isQueryResult`, `results.columns`, `data[].kind`, `data[].fields`를 사용합니다. 클라이언트는 실제 serializer 형식을 우선하며 `queryResult`도 호환 입력으로 허용합니다.
 
+Flink 2.3 OpenAPI의 `RefreshMaterializedTableRequestBody`에는 `isPeriodic`과 getter에서 유도된 `periodic`이 함께 나타나지만 실제 `release-2.3.0` field와 `@JsonProperty`는 `isPeriodic`이다. client는 두 key를 함께 보내지 않고 `isPeriodic`만 전송한다. v4 OpenAPI가 refresh schema component를 포함하더라도 v4 path에는 refresh endpoint가 없으므로 capability로 활성화하지 않는다.
+
 공식 자료:
 
 - [Flink 1.20 SQL Gateway REST Endpoint](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/dev/table/sql-gateway/rest/)
 - [Flink 1.20 v1 OpenAPI](https://nightlies.apache.org/flink/flink-docs-release-1.20/generated/rest_v1_sql_gateway.yml)
+- [Flink 2.3 SQL Gateway REST Endpoint](https://nightlies.apache.org/flink/flink-docs-release-2.3/docs/sql/interfaces/sql-gateway/rest/)
+- [Flink 2.3 OpenAPI v1](https://nightlies.apache.org/flink/flink-docs-release-2.3/generated/rest_v1_sql_gateway.yml), [v2](https://nightlies.apache.org/flink/flink-docs-release-2.3/generated/rest_v2_sql_gateway.yml), [v3](https://nightlies.apache.org/flink/flink-docs-release-2.3/generated/rest_v3_sql_gateway.yml), [v4](https://nightlies.apache.org/flink/flink-docs-release-2.3/generated/rest_v4_sql_gateway.yml)
+- [Flink 2.3 구현 및 검증 안내](docs/flink-2.3.md)
 
 ## 재시도와 정리 정책
 
@@ -512,7 +595,7 @@ OpenAPI는 결과 body 일부를 `any`로 표시하고 `queryResult`라고 기�
 - Operation 상태 및 결과 조회
 - heartbeat
 
-세션 생성, SQL 실행, 세션 구성 SQL, Operation 취소/종료, 세션 종료는 자동 재시도하지 않습니다. 특히 SQL 실행 POST는 응답 유실 시 이미 Job이 제출됐을 수 있으므로 절대 자동 재호출하지 않습니다. 이 경우 `errors.Is(err, flinksqlgateway.ErrExecutionOutcomeUnknown)` 또는 `errors.As`로 상태를 판별할 수 있습니다.
+세션 생성, SQL 실행, 세션 구성 SQL, Materialized Table refresh, Script 배포, Operation 취소/종료, 세션 종료는 자동 재시도하지 않습니다. 특히 비멱등 POST는 응답 유실 시 server에서 이미 처리됐을 수 있으므로 절대 자동 재호출하지 않습니다. SQL은 `ErrExecutionOutcomeUnknown`, refresh는 `ErrMaterializedTableRefreshOutcomeUnknown`, 배포는 `ErrScriptDeploymentOutcomeUnknown` 및 대응 typed error로 판별할 수 있습니다.
 
 `ExecutionTimeout`은 모든 profile에서 제출부터 결과 수집까지의 client-side 제한입니다. Flink 1.20 profile은 SQL Gateway REST 요청의 양수 `executionTimeout`을 지원하지 않으므로 field 자체를 생략합니다. `WireExecutionTimeout` capability가 참인 2.x profile은 같은 제한을 millisecond wire field로도 전송하지만 client-side context 제한은 그대로 유지합니다.
 
@@ -522,7 +605,7 @@ Operation handle을 받은 뒤 context가 취소되면 `CancelOnContextDone` 설
 
 - 기본 TLS 검증을 끄지 않습니다. mTLS나 인증은 주입한 `http.Client.Transport`/`Headers`에서 구성합니다.
 - redirect와 `nextResultUri`는 최초 Gateway와 scheme/host/port가 같은 경우만 허용합니다.
-- 오류와 Observer endpoint에는 query string, SQL, 인증 헤더가 포함되지 않습니다.
+- 오류와 Observer endpoint에는 query string, SQL/Script, Script URI, option/config map, 인증 헤더가 포함되지 않습니다.
 - `GatewayClient`는 여러 goroutine에서 공유할 수 있습니다.
 - `Session`과 `Operation`은 immutable handle 모델이라 동시 읽기가 안전합니다.
 - 같은 세션의 기본 병렬 호출은 유지됩니다. `USE`, `SET`, temporary object처럼 순서가 중요한 문장은 `SerializedSession` 또는 `ManagedSessionOptions.Serialize`로 직렬화할 수 있습니다.
@@ -550,12 +633,20 @@ go test -tags=integration ./...
 
 `FLINK_SQL_GATEWAY_URL`이 없으면 integration test는 skip됩니다. URL을 설정한 경우 실제 `/info` 및 선택 결과가 기대값과 다르면 실패합니다. 기존 `FLINK_SQL_GATEWAY_API_VERSION`은 API 버전의 deprecated fallback으로만 유지됩니다.
 
+Flink 2.3.0은 v3/v4 matrix runner로 실행할 수 있다. Materialized Table identifier와 inline Script/Script URI는 실제 catalog·cluster fixture가 필요하므로 opt-in 환경변수로만 실행된다.
+
+```powershell
+.\integration\run-flink-2.3-matrix.ps1 -GatewayURL 'http://localhost:8083'
+
+$env:FLINK_TEST_MATERIALIZED_TABLE_IDENTIFIER = 'catalog.database.table'
+$env:FLINK_TEST_DEPLOY_SCRIPT_URI = 'file:///opt/flink/sql/application.sql'
+$env:FLINK_TEST_DEPLOY_SCRIPT_EXECUTION_CONFIG = '{"kubernetes.cluster-id":"sql-application"}'
+```
+
 Flink 2.0.x~2.3.x는 실제 Gateway 통합 테스트를 통과하기 전까지 `experimental`이며, 문서나 산출물의 `TestedVersions`에는 임의의 patch 버전을 추가하지 않습니다.
 
 ## 현재 범위 밖
 
-- Materialized Table v3 API
-- Deploy Script v4 공개 helper
 - Flink 2.0.x~2.3.x 실제 Gateway 통합 검증
 - reverse-proxy URI rewrite resolver
 - 전체 API version contract CI, SBOM, provenance 자동화
@@ -563,4 +654,4 @@ Flink 2.0.x~2.3.x는 실제 Gateway 통합 테스트를 통과하기 전까지 `
 - JDBC/JVM/GraalVM/CGO/database/sql
 - Kafka/Elasticsearch 연결 검증과 UI
 
-상세 설계는 [docs/design.md](docs/design.md), 버전 선택과 지원 상태는 [docs/compatibility.md](docs/compatibility.md), 배포 정책은 [docs/release-policy.md](docs/release-policy.md)를 참고하십시오.
+상세 설계는 [docs/design.md](docs/design.md), 버전 선택과 지원 상태는 [docs/compatibility.md](docs/compatibility.md), Flink 2.3 구현 및 live fixture는 [docs/flink-2.3.md](docs/flink-2.3.md), 배포 정책은 [docs/release-policy.md](docs/release-policy.md)를 참고하십시오.

@@ -21,6 +21,43 @@ func validateOperationHandle(handle string) error {
 	return validateOpaqueHandle("operation", handle)
 }
 
+// validateMaterializedTableIdentifier는 fully qualified identifier를 SQL로 해석하지 않고 하나의
+// REST path parameter로 전달하기 위한 최소 안전 조건만 확인한다.
+func validateMaterializedTableIdentifier(identifier string) error {
+	if strings.TrimSpace(identifier) == "" {
+		return fmt.Errorf("flinksqlgateway: materialized table identifier is required")
+	}
+	if len(identifier) > maxHandleBytes {
+		return fmt.Errorf("flinksqlgateway: materialized table identifier exceeds %d bytes", maxHandleBytes)
+	}
+	if !utf8.ValidString(identifier) {
+		return fmt.Errorf("flinksqlgateway: materialized table identifier is not valid UTF-8")
+	}
+	for _, value := range identifier {
+		if unicode.IsControl(value) {
+			return fmt.Errorf("flinksqlgateway: materialized table identifier contains a control character")
+		}
+	}
+	return nil
+}
+
+// validateScriptURI는 Flink가 해석할 URI scheme을 제한하지 않되 빈 값, 잘못된 UTF-8과
+// URL/오류 경계를 흐릴 수 있는 제어문자는 network 호출 전에 거부한다.
+func validateScriptURI(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("flinksqlgateway: script URI is required")
+	}
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("flinksqlgateway: script URI is not valid UTF-8")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return fmt.Errorf("flinksqlgateway: script URI contains a control character")
+		}
+	}
+	return nil
+}
+
 // validateOpaqueHandle은 slash와 일반 Unicode는 허용하고 빈 값, 제어문자와 과도한 크기를 차단한다.
 func validateOpaqueHandle(kind, handle string) error {
 	if strings.TrimSpace(handle) == "" {

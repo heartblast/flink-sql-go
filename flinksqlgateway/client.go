@@ -129,6 +129,12 @@ var _ SessionSetupExecutor = (*GatewayClient)(nil)
 // 컴파일 시 GatewayClient가 기존 Client와 분리된 compatibility 조회 계약을 구현하는지 확인한다.
 var _ CompatibilityProvider = (*GatewayClient)(nil)
 
+// 컴파일 시 GatewayClient가 기존 Client와 분리된 Materialized Table refresh 계약을 구현하는지 확인한다.
+var _ MaterializedTableRefresher = (*GatewayClient)(nil)
+
+// 컴파일 시 GatewayClient가 기존 Client와 분리된 Script 배포 계약을 구현하는지 확인한다.
+var _ ScriptDeployer = (*GatewayClient)(nil)
+
 // NewClient는 설정을 검증하고 재사용 가능한 client를 생성한다. 생성 중에는 네트워크를
 // 호출하지 않으며 첫 versioned 요청에서 APIVersion을 검증한다.
 func NewClient(cfg Config) (*GatewayClient, error) {

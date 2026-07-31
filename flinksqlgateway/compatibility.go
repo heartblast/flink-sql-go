@@ -150,6 +150,35 @@ var compatibilityProfiles = []compatibilityProfile{
 	newCompatibilityProfile(Flink23, ReleaseExperimental, []string{}, []string{"v1", "v2", "v3", "v4"}, "v3", true, true, true, true, true, true),
 }
 
+// sqlGatewayProtocolCapabilities는 REST API 번호의 순서를 기능 누적으로 해석하지 않고 각
+// protocol 문서에 실제로 등록된 endpoint와 wire field만 기술한다. 특히 v3의 Materialized
+// Table refresh와 v4의 Deploy Script는 서로 배타적인 endpoint 집합이다.
+var sqlGatewayProtocolCapabilities = map[string]Capabilities{
+	"v1": {
+		WireExecutionTimeout: true,
+	},
+	"v2": {
+		ConfigureSession:     true,
+		CompleteStatement:    true,
+		RowFormat:            true,
+		WireExecutionTimeout: true,
+	},
+	"v3": {
+		ConfigureSession:     true,
+		CompleteStatement:    true,
+		RowFormat:            true,
+		MaterializedTable:    true,
+		WireExecutionTimeout: true,
+	},
+	"v4": {
+		ConfigureSession:     true,
+		CompleteStatement:    true,
+		RowFormat:            true,
+		DeployScript:         true,
+		WireExecutionTimeout: true,
+	},
+}
+
 // newCompatibilityProfile은 registry 선언에서 profile capability와 API 목록을 한곳에 결합한다.
 func newCompatibilityProfile(
 	releaseLine ReleaseLine,
@@ -195,7 +224,7 @@ func SupportedFlinkVersions() []SupportedFlinkRelease {
 // CompatibilityMatrix는 기본 선택값과 전체 release registry의 독립적인 snapshot을 반환한다.
 func CompatibilityMatrix() CompatibilityMatrixInfo {
 	return CompatibilityMatrixInfo{
-		SchemaVersion:      1,
+		SchemaVersion:      2,
 		DefaultReleaseLine: Flink120,
 		DefaultAPIVersion:  DefaultAPIVersion,
 		SupportedReleases:  SupportedFlinkVersions(),
@@ -333,6 +362,44 @@ func (c *GatewayClient) configuredCompatibility() (CompatibilityInfo, bool, erro
 		Capabilities:    capabilitiesForProfile(profile, c.cfg.APIVersion),
 		DetectionSource: DetectionSourceConfigured,
 	}, true, nil
+}
+
+// compatibilityForCapability는 explicit profile에서 미지원 기능을 metadata network 호출 전에
+// 차단하고, 그 밖의 경우에는 lazy compatibility 감지를 마친 뒤 같은 조건을 다시 검증한다.
+func (c *GatewayClient) compatibilityForCapability(
+	ctx context.Context,
+	operation string,
+	supported func(Capabilities) bool,
+) (CompatibilityInfo, error) {
+	configured, known, err := c.configuredCompatibility()
+	if err != nil {
+		return CompatibilityInfo{}, err
+	}
+	if known && !supported(configured.Capabilities) {
+		return CompatibilityInfo{}, newCompatibilityError(
+			ErrUnsupportedCapability,
+			operation,
+			configured.FlinkVersion,
+			configured.ReleaseLine,
+			configured.APIVersion,
+			nil,
+		)
+	}
+	if err := c.CheckCompatibility(ctx); err != nil {
+		return CompatibilityInfo{}, err
+	}
+	compatibility := c.compatibilitySnapshot()
+	if !supported(compatibility.Capabilities) {
+		return CompatibilityInfo{}, newCompatibilityError(
+			ErrUnsupportedCapability,
+			operation,
+			compatibility.FlinkVersion,
+			compatibility.ReleaseLine,
+			compatibility.APIVersion,
+			nil,
+		)
+	}
+	return compatibility, nil
 }
 
 // parseFlinkReleaseLine은 정식 및 prerelease Flink 제품 버전에서 major.minor 계열을 추출한다.
@@ -525,20 +592,32 @@ func capabilitiesForProfile(profile compatibilityProfile, apiVersion string) Cap
 	result := cloneCapabilities(profile.capabilities)
 	result.APIVersion = apiVersion
 	if !containsVersion(profile.apiVersions, apiVersion) {
-		result.ConfigureSession = false
-		result.CompleteStatement = false
-		result.RowFormat = false
-		result.MaterializedTable = false
-		result.DeployScript = false
+		disableProtocolCapabilities(&result)
 		return result
 	}
-	versionNumber := apiVersionNumber(apiVersion)
-	result.ConfigureSession = result.ConfigureSession && versionNumber >= 2
-	result.CompleteStatement = result.CompleteStatement && versionNumber >= 2
-	result.RowFormat = result.RowFormat && versionNumber >= 2
-	result.MaterializedTable = result.MaterializedTable && versionNumber >= 3
-	result.DeployScript = result.DeployScript && versionNumber >= 4
+	protocol, known := sqlGatewayProtocolCapabilities[apiVersion]
+	if !known {
+		disableProtocolCapabilities(&result)
+		return result
+	}
+	result.ConfigureSession = result.ConfigureSession && protocol.ConfigureSession
+	result.CompleteStatement = result.CompleteStatement && protocol.CompleteStatement
+	result.RowFormat = result.RowFormat && protocol.RowFormat
+	result.MaterializedTable = result.MaterializedTable && protocol.MaterializedTable
+	result.DeployScript = result.DeployScript && protocol.DeployScript
+	result.WireExecutionTimeout = result.WireExecutionTimeout && protocol.WireExecutionTimeout
 	return result
+}
+
+// disableProtocolCapabilities는 release metadata는 보존하면서 확인되지 않은 protocol 기능을
+// 모두 보수적으로 비활성화한다.
+func disableProtocolCapabilities(capabilities *Capabilities) {
+	capabilities.ConfigureSession = false
+	capabilities.CompleteStatement = false
+	capabilities.RowFormat = false
+	capabilities.MaterializedTable = false
+	capabilities.DeployScript = false
+	capabilities.WireExecutionTimeout = false
 }
 
 // containsVersion은 정규화된 API 버전 목록의 membership을 확인한다.
