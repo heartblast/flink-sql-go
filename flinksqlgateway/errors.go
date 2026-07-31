@@ -42,6 +42,12 @@ var (
 	// ErrConfigurationOutcomeUnknown은 session 설정이 Flink에 도달했을 수 있지만 client가
 	// 완료 응답을 확인하지 못했음을 나타낸다. 같은 설정을 자동 재시도하면 안 된다.
 	ErrConfigurationOutcomeUnknown = errors.New("session configuration outcome is unknown")
+	// ErrMaterializedTableRefreshOutcomeUnknown은 refresh 요청이 Flink에 도달했을 수 있지만
+	// operation handle을 확인하지 못했음을 나타낸다. 같은 요청을 자동 재시도하면 안 된다.
+	ErrMaterializedTableRefreshOutcomeUnknown = errors.New("materialized table refresh outcome is unknown")
+	// ErrScriptDeploymentOutcomeUnknown은 Script 배포 요청이 Flink에 도달했을 수 있지만
+	// cluster ID를 확인하지 못했음을 나타낸다. 같은 요청을 자동 재시도하면 안 된다.
+	ErrScriptDeploymentOutcomeUnknown = errors.New("script deployment outcome is unknown")
 	// ErrSessionSetupVerification은 적용된 setup 객체를 metadata 조회로 확인하지 못했음을 나타낸다.
 	// DDL이 적용되지 않았다는 의미로 사용하면 안 된다.
 	ErrSessionSetupVerification = errors.New("session setup metadata verification failed")
@@ -124,6 +130,26 @@ const (
 // ExecutionOutcomeUnknownError는 server 처리 결과를 안전하게 판단할 수 없는 statement
 // 제출을 보고하며 statement 원문은 포함하지 않는다.
 type ExecutionOutcomeUnknownError struct {
+	SessionHandle string
+	Method        string
+	Endpoint      string
+	RequestPhase  RequestPhase
+	Cause         error
+}
+
+// MaterializedTableRefreshOutcomeUnknownError는 refresh 결과가 불명확한 transport 단계만
+// 보존하며 identifier, option과 실행 설정은 포함하지 않는다.
+type MaterializedTableRefreshOutcomeUnknownError struct {
+	SessionHandle string
+	Method        string
+	Endpoint      string
+	RequestPhase  RequestPhase
+	Cause         error
+}
+
+// ScriptDeploymentOutcomeUnknownError는 배포 결과가 불명확한 transport 단계만 보존하며
+// Script, URI와 실행 설정은 포함하지 않는다.
+type ScriptDeploymentOutcomeUnknownError struct {
 	SessionHandle string
 	Method        string
 	Endpoint      string
@@ -233,6 +259,48 @@ func (e *ExecutionOutcomeUnknownError) Unwrap() error {
 // Is는 원인 오류를 잃지 않고 ErrExecutionOutcomeUnknown으로 분류하게 한다.
 func (e *ExecutionOutcomeUnknownError) Is(target error) bool {
 	return target == ErrExecutionOutcomeUnknown
+}
+
+// Error는 option이나 identifier 없이 마스킹한 session과 refresh 결과 불명확 단계를 반환한다.
+func (e *MaterializedTableRefreshOutcomeUnknownError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%v: %s %s phase=%s session=%s", ErrMaterializedTableRefreshOutcomeUnknown, e.Method, e.Endpoint, e.RequestPhase, MaskHandle(e.SessionHandle))
+}
+
+// Unwrap은 원인이 된 정제된 transport 또는 API 오류를 보존한다.
+func (e *MaterializedTableRefreshOutcomeUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// Is는 원인 오류와 함께 Materialized Table refresh 전용 sentinel 분류를 제공한다.
+func (e *MaterializedTableRefreshOutcomeUnknownError) Is(target error) bool {
+	return target == ErrMaterializedTableRefreshOutcomeUnknown
+}
+
+// Error는 Script나 URI 없이 마스킹한 session과 배포 결과 불명확 단계를 반환한다.
+func (e *ScriptDeploymentOutcomeUnknownError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%v: %s %s phase=%s session=%s", ErrScriptDeploymentOutcomeUnknown, e.Method, e.Endpoint, e.RequestPhase, MaskHandle(e.SessionHandle))
+}
+
+// Unwrap은 원인이 된 정제된 transport 또는 API 오류를 보존한다.
+func (e *ScriptDeploymentOutcomeUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+// Is는 원인 오류와 함께 Script 배포 전용 sentinel 분류를 제공한다.
+func (e *ScriptDeploymentOutcomeUnknownError) Is(target error) bool {
+	return target == ErrScriptDeploymentOutcomeUnknown
 }
 
 // APIError는 응답 stack trace나 요청 query parameter를 노출하지 않고 transport 또는

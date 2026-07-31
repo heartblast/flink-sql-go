@@ -1,7 +1,41 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "defaultReleaseLine": "1.20",
   "defaultApiVersion": "v3",
+  "protocolCapabilities": {
+    "v1": {
+      "configureSession": false,
+      "completeStatement": false,
+      "rowFormat": false,
+      "materializedTable": false,
+      "deployScript": false,
+      "wireExecutionTimeout": true
+    },
+    "v2": {
+      "configureSession": true,
+      "completeStatement": true,
+      "rowFormat": true,
+      "materializedTable": false,
+      "deployScript": false,
+      "wireExecutionTimeout": true
+    },
+    "v3": {
+      "configureSession": true,
+      "completeStatement": true,
+      "rowFormat": true,
+      "materializedTable": true,
+      "deployScript": false,
+      "wireExecutionTimeout": true
+    },
+    "v4": {
+      "configureSession": true,
+      "completeStatement": true,
+      "rowFormat": true,
+      "materializedTable": false,
+      "deployScript": true,
+      "wireExecutionTimeout": true
+    }
+  },
   "supportedReleases": [
     {
       "releaseLine": "1.20",

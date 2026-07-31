@@ -49,12 +49,12 @@ function Read-CompatibilityManifest {
         throw "Compatibility manifest '$Path' must use the repository's JSON-compatible YAML format: $($_.Exception.Message)"
     }
 
-    foreach ($propertyName in @("schemaVersion", "defaultReleaseLine", "defaultApiVersion", "supportedReleases")) {
+    foreach ($propertyName in @("schemaVersion", "defaultReleaseLine", "defaultApiVersion", "protocolCapabilities", "supportedReleases")) {
         if ($null -eq $manifest.PSObject.Properties[$propertyName]) {
             throw "Compatibility manifest is missing '$propertyName'."
         }
     }
-    if ($manifest.schemaVersion -ne 1) {
+    if ($manifest.schemaVersion -ne 2) {
         throw "Unsupported compatibility manifest schema version '$($manifest.schemaVersion)'."
     }
 
@@ -80,6 +80,21 @@ function Read-CompatibilityManifest {
         "deployScript",
         "wireExecutionTimeout"
     )
+    $protocols = @($manifest.protocolCapabilities.PSObject.Properties)
+    if ($protocols.Count -eq 0) {
+        throw "Compatibility manifest must declare protocolCapabilities."
+    }
+    foreach ($protocol in $protocols) {
+        if ($protocol.Name -notmatch '^v[1-9][0-9]*$') {
+            throw "Compatibility protocol capability '$($protocol.Name)' has an invalid API version."
+        }
+        foreach ($capabilityName in $requiredCapabilities) {
+            $capability = $protocol.Value.PSObject.Properties[$capabilityName]
+            if ($null -eq $capability -or $capability.Value -isnot [bool]) {
+                throw "Compatibility protocol '$($protocol.Name)' capability '$capabilityName' must be boolean."
+            }
+        }
+    }
     $seenReleaseLines = @{}
     $defaultProfile = $null
 
@@ -110,6 +125,9 @@ function Read-CompatibilityManifest {
         foreach ($apiVersion in $apiVersions) {
             if ("$apiVersion" -notmatch '^v[1-9][0-9]*$') {
                 throw "Compatibility release line '$releaseLine' has invalid REST API version '$apiVersion'."
+            }
+            if ($null -eq $manifest.protocolCapabilities.PSObject.Properties["$apiVersion"]) {
+                throw "Compatibility release line '$releaseLine' references API version '$apiVersion' without a protocol capability descriptor."
             }
         }
         if ($apiVersions -notcontains "$($release.stableApiVersion)") {
@@ -393,11 +411,23 @@ try {
             }
         }
     )
+    $CompatibilityProtocolCapabilities = [ordered]@{}
+    foreach ($protocol in @($CompatibilityManifest.protocolCapabilities.PSObject.Properties)) {
+        $CompatibilityProtocolCapabilities[$protocol.Name] = [ordered]@{
+            configureSession = [bool]$protocol.Value.configureSession
+            completeStatement = [bool]$protocol.Value.completeStatement
+            rowFormat = [bool]$protocol.Value.rowFormat
+            materializedTable = [bool]$protocol.Value.materializedTable
+            deployScript = [bool]$protocol.Value.deployScript
+            wireExecutionTimeout = [bool]$protocol.Value.wireExecutionTimeout
+        }
+    }
     $CompatibilityInfo = [ordered]@{
         schemaVersion = [int]$CompatibilityManifest.schemaVersion
         libraryVersion = $ResolvedVersion
         defaultReleaseLine = "$($CompatibilityManifest.defaultReleaseLine).x"
         defaultApiVersion = "$($CompatibilityManifest.defaultApiVersion)"
+        protocolCapabilities = $CompatibilityProtocolCapabilities
         supportedFlinkReleaseLines = $CompatibilityReleases
     }
     $CompatibilityInfo | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $CompatibilityInfoPath -Encoding UTF8

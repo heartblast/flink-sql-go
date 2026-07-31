@@ -4,6 +4,7 @@ package flinksqlgateway_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -57,6 +58,19 @@ func TestGatewayCompatibility(t *testing.T) {
 	}
 	if info.Version != expectedVersion {
 		t.Fatalf("gateway version = %q, want %q", info.Version, expectedVersion)
+	}
+	advertisedVersions, err := client.GetAPIVersions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expectedReleaseLine == string(flinksqlgateway.Flink23) {
+		for _, expected := range []string{"v1", "v2", "v3", "v4"} {
+			if !containsIntegrationValue(advertisedVersions, expected) {
+				t.Fatalf("Flink 2.3 advertised API versions = %v; missing %s", advertisedVersions, expected)
+			}
+		}
+		assertIntegrationPolicy(t, baseURL, flinksqlgateway.APIVersionStable, "v3")
+		assertIntegrationPolicy(t, baseURL, flinksqlgateway.APIVersionHighest, "v4")
 	}
 	compatibility, err := client.GetCompatibilityInfo(ctx)
 	if err != nil {
@@ -114,6 +128,140 @@ func TestGatewayCompatibility(t *testing.T) {
 	if result.RowsReceived == 0 {
 		t.Fatal("SELECT 1 returned no rows")
 	}
+
+	operation, err := client.ExecuteStatement(ctx, session.Handle, flinksqlgateway.ExecuteStatementRequest{
+		Statement:        "SELECT 2",
+		ExecutionTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := client.GetOperationStatus(ctx, session.Handle, operation.Handle)
+	if err != nil || status == "" {
+		t.Fatalf("GetOperationStatus() = %q, %v", status, err)
+	}
+	page := waitForIntegrationResult(t, ctx, client, session.Handle, operation.Handle, flinksqlgateway.RowFormatPlainText)
+	if page.Results == nil || page.Results.RowFormat != flinksqlgateway.RowFormatPlainText {
+		t.Fatalf("PLAIN_TEXT result = %+v", page)
+	}
+	if err := client.CloseOperation(ctx, session.Handle, operation.Handle); err != nil {
+		t.Fatal(err)
+	}
+
+	if expectedAPIVersion == "v3" {
+		identifier := strings.TrimSpace(os.Getenv("FLINK_TEST_MATERIALIZED_TABLE_IDENTIFIER"))
+		if identifier == "" {
+			t.Log("FLINK_TEST_MATERIALIZED_TABLE_IDENTIFIER is not set; skipping live Materialized Table refresh")
+		} else {
+			refreshOperation, err := client.RefreshMaterializedTable(ctx, session.Handle, identifier, flinksqlgateway.RefreshMaterializedTableRequest{
+				Periodic:         strings.EqualFold(strings.TrimSpace(os.Getenv("FLINK_TEST_MATERIALIZED_TABLE_PERIODIC")), "true"),
+				ScheduleTime:     strings.TrimSpace(os.Getenv("FLINK_TEST_MATERIALIZED_TABLE_SCHEDULE_TIME")),
+				DynamicOptions:   optionalIntegrationMap(t, "FLINK_TEST_MATERIALIZED_TABLE_DYNAMIC_OPTIONS"),
+				StaticPartitions: optionalIntegrationMap(t, "FLINK_TEST_MATERIALIZED_TABLE_STATIC_PARTITIONS"),
+				ExecutionConfig:  optionalIntegrationMap(t, "FLINK_TEST_MATERIALIZED_TABLE_EXECUTION_CONFIG"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.GetOperationStatus(ctx, session.Handle, refreshOperation.Handle); err != nil {
+				t.Fatal(err)
+			}
+			if err := client.CloseOperation(ctx, session.Handle, refreshOperation.Handle); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	if expectedAPIVersion == "v4" {
+		script := os.Getenv("FLINK_TEST_DEPLOY_SCRIPT")
+		scriptURI := strings.TrimSpace(os.Getenv("FLINK_TEST_DEPLOY_SCRIPT_URI"))
+		if script == "" && scriptURI == "" {
+			t.Log("FLINK_TEST_DEPLOY_SCRIPT and FLINK_TEST_DEPLOY_SCRIPT_URI are not set; skipping live Script deployment")
+		} else {
+			deployment, err := client.DeployScript(ctx, session.Handle, flinksqlgateway.DeployScriptRequest{
+				Script:          script,
+				ScriptURI:       scriptURI,
+				ExecutionConfig: optionalIntegrationMap(t, "FLINK_TEST_DEPLOY_SCRIPT_EXECUTION_CONFIG"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(deployment.ClusterID) == "" {
+				t.Fatal("DeployScript returned an empty clusterID")
+			}
+		}
+	}
+}
+
+func assertIntegrationPolicy(t *testing.T, baseURL string, policy flinksqlgateway.APIVersionPolicy, expected string) {
+	t.Helper()
+	client, err := flinksqlgateway.NewClient(flinksqlgateway.Config{
+		BaseURL:           baseURL,
+		CompatibilityMode: flinksqlgateway.CompatibilityAuto,
+		APIVersionPolicy:  policy,
+		RequestTimeout:    10 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("policy client Close() error = %v", err)
+		}
+	}()
+	info, err := client.GetCompatibilityInfo(context.Background())
+	if err != nil || info.ReleaseLine != flinksqlgateway.Flink23 || info.APIVersion != expected {
+		t.Fatalf("policy %s compatibility = %+v, %v", policy, info, err)
+	}
+}
+
+func waitForIntegrationResult(
+	t *testing.T,
+	ctx context.Context,
+	client *flinksqlgateway.GatewayClient,
+	sessionHandle string,
+	operationHandle string,
+	rowFormat flinksqlgateway.RowFormat,
+) *flinksqlgateway.ResultPage {
+	t.Helper()
+	for poll := 0; poll < 100; poll++ {
+		page, err := client.FetchResults(ctx, sessionHandle, operationHandle, 0, rowFormat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if page.ResultType != flinksqlgateway.ResultNotReady {
+			return page
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	t.Fatal("result did not become ready within 100 polls")
+	return nil
+}
+
+func optionalIntegrationMap(t *testing.T, name string) map[string]string {
+	t.Helper()
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil
+	}
+	var result map[string]string
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("%s must be a JSON object of string values: %v", name, err)
+	}
+	return result
+}
+
+func containsIntegrationValue(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, expected) {
+			return true
+		}
+	}
+	return false
 }
 
 func requireIntegrationEnv(t *testing.T, name string) string {

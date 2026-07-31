@@ -20,7 +20,7 @@ Flink 호환성의 단일 원천은 루트 `compatibility.yaml`이다. 이 파�
 - release line별 지원 상태
 - 직접 검증한 patch 버전
 - 지원하는 REST API 버전과 Stable 버전
-- endpoint 및 wire quirk capability
+- release capability와 API별 endpoint/wire descriptor
 
 `SupportedFlinkVersion`과 `BuildInfo.FlinkVersion`은 기존 호출자의 source 호환성을 위해 `1.20.4`를 유지하는 Deprecated 필드다. 신규 코드는 `SupportedFlinkVersions`, `CompatibilityMatrix` 또는 `BuildInfo.SupportedFlinkReleaseLines`을 사용한다.
 
@@ -35,7 +35,7 @@ release line 지원과 patch 검증은 다른 의미다. 예를 들어 `2.0.x`�
 빌드는 다음 순서로 실행한다.
 
 1. Go toolchain 및 `VERSION` 검증
-2. `compatibility.yaml` schema, release line, API 버전, capability 검증
+2. `compatibility.yaml` schema 2, release line, API 버전, protocol capability 검증
 3. Git commit과 dirty 상태 수집
 4. `go mod verify`, `go mod tidy -diff`, `gofmt`, `go vet`
 5. 단위·fixture 테스트, integration-tagged package compile, 전체 package build
@@ -97,7 +97,7 @@ git tag -a v0.2.0 -m "v0.2.0"
 | `flink-sql-go-<version>.coverage.out` | coverage profile |
 | `flink-sql-go-<version>.sha256` | 위 주요 산출물의 SHA-256 |
 
-build-info schema 3은 기존 `version` 필드와 함께 `libraryVersion`, `defaultFlinkReleaseLine`, `defaultApiVersion`, `supportedFlinkReleaseLines`을 기록한다. compatibility JSON은 `compatibility.yaml`에서 직접 만들며, source ZIP과 checksum에도 포함한다.
+build-info schema 3은 기존 `version` 필드와 함께 `libraryVersion`, `defaultFlinkReleaseLine`, `defaultApiVersion`, `supportedFlinkReleaseLines`을 기록한다. compatibility JSON schema 2는 release snapshot과 `protocolCapabilities`를 `compatibility.yaml`에서 직접 만들며, source ZIP과 checksum에도 포함한다.
 
 ## 실제 Gateway 검증
 
@@ -108,5 +108,27 @@ $env:FLINK_TEST_RELEASE_LINE = '1.20'
 $env:FLINK_TEST_API_VERSION = 'v3'
 go test -tags=integration -count=1 ./...
 ```
+
+Flink 2.3.0 Gateway는 v3와 v4를 분리해 검증한다.
+
+```powershell
+.\integration\run-flink-2.3-matrix.ps1 -GatewayURL 'http://localhost:8083'
+```
+
+runner는 `FLINK_TEST_VERSION=2.3.0`, `FLINK_TEST_RELEASE_LINE=2.3`을 설정하고 `FLINK_TEST_API_VERSION`을 v3/v4로 바꿔 같은 integration suite를 두 번 실행한다. v3 Materialized Table과 v4 Script 배포는 기본 Gateway만으로 fixture를 만들 수 없으므로 다음 opt-in 변수를 사용한다.
+
+| 변수 | 용도 |
+| --- | --- |
+| `FLINK_TEST_MATERIALIZED_TABLE_IDENTIFIER` | 이미 준비된 fully qualified Materialized Table |
+| `FLINK_TEST_MATERIALIZED_TABLE_PERIODIC` | refresh `isPeriodic`; `true`일 때만 활성 |
+| `FLINK_TEST_MATERIALIZED_TABLE_SCHEDULE_TIME` | 선택적인 schedule time |
+| `FLINK_TEST_MATERIALIZED_TABLE_DYNAMIC_OPTIONS` | JSON string map |
+| `FLINK_TEST_MATERIALIZED_TABLE_STATIC_PARTITIONS` | JSON string map |
+| `FLINK_TEST_MATERIALIZED_TABLE_EXECUTION_CONFIG` | JSON string map |
+| `FLINK_TEST_DEPLOY_SCRIPT` | inline Script; URI와 동시에 설정 금지 |
+| `FLINK_TEST_DEPLOY_SCRIPT_URI` | Flink가 접근 가능한 Script URI |
+| `FLINK_TEST_DEPLOY_SCRIPT_EXECUTION_CONFIG` | JSON string map |
+
+실제 run 결과를 확인하기 전에는 `testedVersions`에 2.3.0을 추가하거나 `experimental` 상태를 변경하지 않는다.
 
 PR CI는 네트워크가 필요 없는 단위·fixture contract test와 integration-tagged compile을 수행한다. 예약 workflow는 실제 endpoint secret이 있는 `testedVersions`만 matrix에 포함한다. endpoint가 없으면 실패하며, 검증하지 않은 2.x를 통과로 기록하지 않는다.

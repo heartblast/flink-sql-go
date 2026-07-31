@@ -100,6 +100,12 @@ func (c *GatewayClient) ExecuteStatement(ctx context.Context, sessionHandle stri
 
 // statementOutcomeIsUnknown은 비멱등 SQL 제출이 server에서 실행됐을 가능성을 보수적으로 판별한다.
 func statementOutcomeIsUnknown(apiErr *APIError) bool {
+	return nonIdempotentOutcomeIsUnknown(apiErr)
+}
+
+// nonIdempotentOutcomeIsUnknown은 비멱등 POST가 server에서 처리됐을 가능성을 transport
+// 진행 단계와 HTTP status로 보수적으로 판별한다.
+func nonIdempotentOutcomeIsUnknown(apiErr *APIError) bool {
 	if apiErr == nil || apiErr.RequestPhase == "" || apiErr.RequestPhase == RequestNotSent {
 		return false
 	}

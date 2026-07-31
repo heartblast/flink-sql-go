@@ -31,6 +31,17 @@ Flink 2.0.x~2.3.x의 `experimental` 표시는 release/API profile과 요청 enco
 
 루트 `compatibility.yaml`이 release metadata의 기준이다. 빌드와 contract test는 Go registry 및 `flink-sql-go-<version>.compatibility.json` 산출물이 이 manifest와 일치하는지 검증한다. library 버전은 Flink 버전과 독립적이며 릴리스 하나가 위 release line 전체를 표현한다.
 
+schema 2는 release capability와 protocol endpoint descriptor를 분리한다. REST API 번호가 증가해도 이전 endpoint가 그대로 존재한다고 추측하지 않는다.
+
+| API | ConfigureSession | CompleteStatement | RowFormat | MaterializedTable | DeployScript | Flink 2.3 wire `executionTimeout` |
+| --- | --- | --- | --- | --- | --- | --- |
+| v1 | false | false | false | false | false | true |
+| v2 | true | true | true | false | false | true |
+| v3 | true | true | true | true | false | true |
+| v4 | true | true | true | false | true | true |
+
+Flink 1.20 release profile은 release quirk의 `WireExecutionTimeout=false`와 protocol descriptor를 교차하므로 모든 선택 API에서 field를 생략한다. 알 수 없는 API version은 모든 endpoint/wire capability를 false로 둔다.
+
 ## 기본 동작과 lazy 감지
 
 기본 설정은 다음과 같다.
@@ -146,9 +157,11 @@ Capability는 release profile과 선택한 REST protocol의 교집합이다. 호
 - `MaterializedTable`, `DeployScript`
 - `WireExecutionTimeout`
 
-`ExecutionTimeout`은 모든 profile에서 client-side context 제한으로 적용된다. Flink 1.20 profile은 `WireExecutionTimeout=false`이므로 statement와 configure-session JSON에서 `executionTimeout` field 자체를 생략한다. 2.x profile은 capability가 참이고 값이 양수일 때 millisecond wire field도 전송한다. wire 전송 여부와 관계없이 client-side timeout, polling 상한과 cleanup 제한은 유지된다.
+`ExecutionTimeout`은 모든 profile에서 client-side context 제한으로 적용된다. Flink 1.20 profile은 `WireExecutionTimeout=false`이므로 statement와 configure-session JSON에서 `executionTimeout` field 자체를 생략한다. Flink 2.3은 v1을 포함한 v1~v4에서 capability가 참이고 값이 양수일 때 millisecond wire field도 전송한다. wire 전송 여부와 관계없이 client-side timeout, polling 상한과 cleanup 제한은 유지된다.
 
 기능을 제공하지 않는 profile/protocol 조합에서 요청하면 `ErrUnsupportedCapability`를 반환하며 해당 기능 요청은 보내지 않는다.
+
+Stable v3는 Materialized Table refresh를 제공하지만 Deploy Script를 제공하지 않는다. Highest v4는 Deploy Script를 제공하지만 Materialized Table refresh를 제공하지 않는다. helper가 선택 API를 바꾸거나 다른 버전으로 fallback하지 않으므로 두 기능이 모두 필요한 운영자는 같은 Gateway를 가리키는 v3/v4 client를 각각 구성해야 한다.
 
 ## Typed error 처리
 
@@ -163,6 +176,8 @@ Compatibility 실패는 `errors.Is`로 분류하고 `errors.As`로 안전한 con
 | `ErrExplicitAPIVersionUnsupportedByProfile` | Explicit 버전을 profile이 허용하지 않음 |
 | `ErrUnsupportedCapability` | 선택한 release/protocol이 기능을 제공하지 않음 |
 | `ErrCompatibilityDetection` | `/info` 또는 `/api_versions` 요청이 완료되지 않음 |
+| `ErrMaterializedTableRefreshOutcomeUnknown` | refresh POST가 처리됐을 수 있으나 operation handle을 확인하지 못함 |
+| `ErrScriptDeploymentOutcomeUnknown` | deploy POST가 처리됐을 수 있으나 clusterID를 확인하지 못함 |
 
 ```go
 info, err := client.GetCompatibilityInfo(ctx)
@@ -213,12 +228,14 @@ release line의 상태 변경은 library SemVer와 분리해 관리한다.
 
 ## Flink 2.3.x와 이후 release 추가 범위
 
-Flink 2.3.x를 표현하기 위해 전체 client를 복사하지 않고 다음 범위만 추가했다.
+Flink 2.3.x를 표현하기 위해 전체 client를 복사하지 않고 다음 범위를 추가했다.
 
 - `ReleaseLine`과 `CompatibilityMode` selector
-- `compatibility.yaml`의 release profile, API 목록, stable 버전과 capability
-- 공통 v1~v4 endpoint/capability 경계 및 필요한 wire quirk
-- profile/API 선택과 `executionTimeout` encoder 단위 테스트
+- `compatibility.yaml` schema 2의 release profile과 정확한 API별 descriptor
+- v3 `MaterializedTableRefresher`와 기존 `Operation` lifecycle 연계
+- v4 `ScriptDeployer`와 opaque `ScriptDeployment.ClusterID`
+- 기능별 outcome-unknown typed error와 secret redaction
+- profile/API 선택, v1 포함 `executionTimeout`, SQL pass-through 단위 테스트
 - 문서와 compatibility 산출물 항목
 
 2.3.x의 특정 patch를 실제 검증한 뒤에는 해당 환경의 `/info` version 일치, session/operation/result/cleanup contract와 보안 회귀를 통과시킨 후에만 `TestedVersions`에 추가한다. 현재는 검증된 2.3.x patch가 없다.

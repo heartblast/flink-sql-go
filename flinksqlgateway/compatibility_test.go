@@ -723,10 +723,11 @@ func TestCompatibilityManifestMatchesRuntimeRegistry(t *testing.T) {
 		Capabilities     manifestCapabilities `json:"capabilities"`
 	}
 	var manifest struct {
-		SchemaVersion      int               `json:"schemaVersion"`
-		DefaultReleaseLine ReleaseLine       `json:"defaultReleaseLine"`
-		DefaultAPIVersion  string            `json:"defaultApiVersion"`
-		SupportedReleases  []manifestRelease `json:"supportedReleases"`
+		SchemaVersion        int                             `json:"schemaVersion"`
+		DefaultReleaseLine   ReleaseLine                     `json:"defaultReleaseLine"`
+		DefaultAPIVersion    string                          `json:"defaultApiVersion"`
+		ProtocolCapabilities map[string]manifestCapabilities `json:"protocolCapabilities"`
+		SupportedReleases    []manifestRelease               `json:"supportedReleases"`
 	}
 	data, err := os.ReadFile(filepath.Join("..", "compatibility.yaml"))
 	if err != nil {
@@ -738,6 +739,27 @@ func TestCompatibilityManifestMatchesRuntimeRegistry(t *testing.T) {
 	matrix := CompatibilityMatrix()
 	if manifest.SchemaVersion != matrix.SchemaVersion || manifest.DefaultReleaseLine != matrix.DefaultReleaseLine || manifest.DefaultAPIVersion != matrix.DefaultAPIVersion {
 		t.Fatalf("manifest defaults = %+v, runtime = %+v", manifest, matrix)
+	}
+	if len(manifest.ProtocolCapabilities) != len(sqlGatewayProtocolCapabilities) {
+		t.Fatalf("manifest protocol capabilities = %d, runtime = %d", len(manifest.ProtocolCapabilities), len(sqlGatewayProtocolCapabilities))
+	}
+	for version, expected := range manifest.ProtocolCapabilities {
+		actual, ok := sqlGatewayProtocolCapabilities[version]
+		if !ok {
+			t.Errorf("manifest protocol %q is missing from runtime registry", version)
+			continue
+		}
+		got := manifestCapabilities{
+			ConfigureSession:     actual.ConfigureSession,
+			CompleteStatement:    actual.CompleteStatement,
+			RowFormat:            actual.RowFormat,
+			MaterializedTable:    actual.MaterializedTable,
+			DeployScript:         actual.DeployScript,
+			WireExecutionTimeout: actual.WireExecutionTimeout,
+		}
+		if expected != got {
+			t.Errorf("manifest protocol %q = %+v, runtime = %+v", version, expected, got)
+		}
 	}
 	if len(manifest.SupportedReleases) != len(matrix.SupportedReleases) {
 		t.Fatalf("manifest releases = %d, runtime = %d", len(manifest.SupportedReleases), len(matrix.SupportedReleases))

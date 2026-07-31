@@ -14,6 +14,8 @@ Config / Client interface
         +-- session.go       stateful session lifecycle
         +-- session_setup.go declarative configure-session orchestration
         +-- operation.go     asynchronous operation lifecycle
+        +-- materialized_table.go v3 refresh submission
+        +-- script.go        v4 Application Mode deployment
         +-- result.go        NOT_READY/PAYLOAD/EOS and paging
         +-- poller.go        collect/stream orchestration and cleanup
         +-- transport.go     bounded JSON HTTP and retry classification
@@ -24,7 +26,7 @@ Config / Client interface
 
 ## Compatibility 모델과 lazy 감지
 
-Flink 제품 release와 SQL Gateway REST API 버전은 독립적인 축으로 취급한다. release profile은 release line, 지원 상태, 직접 검증한 patch, 허용 REST API, stable API와 release별 capability를 보관한다. 선택된 REST protocol은 endpoint와 DTO 기능을 제한하며 최종 capability는 profile과 protocol의 교집합이다.
+Flink 제품 release와 SQL Gateway REST API 버전은 독립적인 축으로 취급한다. release profile은 release line, 지원 상태, 직접 검증한 patch, 허용 REST API, stable API와 release별 capability를 보관한다. 별도 protocol descriptor가 각 API의 정확한 endpoint와 wire field를 기술하며 최종 capability는 profile과 descriptor의 교집합이다. API 번호는 기능 누적을 의미하지 않으므로 capability 계산에서 `>= vN` 비교를 사용하지 않는다.
 
 ```text
 NewClient (no network)
@@ -49,7 +51,7 @@ Stable | Highest | Explicit
 - `GetCompatibilityInfo`, `SupportedFlinkVersions`, `CompatibilityMatrix`는 slice를 복사해 내부 registry를 외부 변경에서 격리한다.
 - compatibility 감지 GET도 공통 transport의 origin, timeout, retry, 응답 크기와 관측 정책을 우회하지 않는다.
 
-`compatibility.yaml`은 release metadata의 단일 원천이다. Go registry와 build의 `compatibility.json` 산출물은 contract 검증으로 manifest와 일치시킨다. Flink 1.20.4만 직접 검증했으며 2.0.x~2.3.x profile은 `experimental`이고 `TestedVersions`가 비어 있다. 자세한 상태와 선택 규칙은 [compatibility.md](compatibility.md)에 정의한다.
+`compatibility.yaml` schema 2는 release metadata와 API별 protocol descriptor의 단일 원천이다. Go registry와 build의 `compatibility.json` 산출물은 contract 검증으로 manifest와 일치시킨다. Flink 1.20.4만 직접 검증했으며 2.0.x~2.3.x profile은 `experimental`이고 `TestedVersions`가 비어 있다. 자세한 상태와 선택 규칙은 [compatibility.md](compatibility.md)에 정의한다.
 
 ## API와 DTO 결정
 
@@ -64,6 +66,16 @@ Stable | Highest | Explicit
 OpenAPI의 추상 schema보다 실제 serializer를 우선했다. Decimal·시간·배열·맵·ROW·binary는 Go 기본 타입으로 강제 변환하지 않고 `json.RawMessage`로 유지한다. `LogicalType.Raw`는 알려지지 않은 type/property도 보존한다.
 
 이후 release에서 같은 wire 구조를 유지하면 공통 DTO를 재사용한다. 실제 field나 endpoint 의미가 달라질 때만 private encoder 또는 protocol descriptor를 분리하며 public DTO를 release마다 복제하지 않는다. `OperationStatus`, `ResultType`과 원본 JSON은 알려지지 않은 이후 값을 가능한 한 보존한다.
+
+Flink `release-2.3.0`은 실제 source의 RequestBody, handler와 MessageHeaders를 v1~v4 OpenAPI와 함께 확인했다.
+
+- v3만 `/sessions/:session_handle/materialized-tables/:identifier/refresh`를 등록한다.
+- v4만 `/sessions/:session_handle/scripts`를 등록한다.
+- v3/v4 OpenAPI refresh schema에는 `isPeriodic`과 `periodic`이 함께 생성되지만 실제 field의 `@JsonProperty`는 `isPeriodic`이다. private encoder는 canonical key 하나만 보낸다.
+- v4 OpenAPI에 refresh schema component가 남아 있어도 path가 없으므로 v4 capability로 계산하지 않는다.
+- `executionTimeout`은 Flink 2.3 OpenAPI v1~v4에 모두 존재하고 실제 RequestBody는 nullable millisecond `Long`이다.
+
+기존 `Client` interface에는 메서드를 추가하지 않는다. `MaterializedTableRefresher`와 `ScriptDeployer`를 별도 capability interface로 제공해 외부 mock과 wrapper의 compile 호환성을 유지한다. refresh 응답은 기존 `Operation`을 재사용하므로 status/cancel/close는 기존 lifecycle API를 그대로 사용한다. Script 배포의 `clusterID`는 opaque 값이며 `JobID`나 `flinkrest` lifecycle에 결합하지 않는다.
 
 ## 세션
 
@@ -133,7 +145,7 @@ Operation cancel이 이미 제출된 Flink Job을 항상 취소한다고 가정�
 
 ## 재시도
 
-안전하게 반복 가능한 `/info`, `/api_versions`, 기타 조회와 heartbeat만 408/429/502/503/504 또는 transport 오류에 최대 1회 재시도한다. SQL 실행, 세션 생성·구성, Session Setup step, 취소·종료는 재시도하지 않는다. 비멱등 statement 제출은 `ErrExecutionOutcomeUnknown`, session 구성은 `ErrConfigurationOutcomeUnknown`으로 별도 분류한다. `APIError.Retryable`은 호출자가 상위 정책을 적용할 때 사용한다.
+안전하게 반복 가능한 `/info`, `/api_versions`, 기타 조회와 heartbeat만 408/429/502/503/504 또는 transport 오류에 최대 1회 재시도한다. SQL 실행, 세션 생성·구성, Session Setup step, Materialized Table refresh, Script 배포, 취소·종료는 재시도하지 않는다. 비멱등 statement 제출은 `ErrExecutionOutcomeUnknown`, session 구성은 `ErrConfigurationOutcomeUnknown`, refresh와 배포는 각각 `ErrMaterializedTableRefreshOutcomeUnknown`, `ErrScriptDeploymentOutcomeUnknown`으로 분류한다. `APIError.Retryable`은 호출자가 상위 정책을 적용할 때 사용한다.
 
 ## 보안
 
@@ -142,7 +154,7 @@ Operation cancel이 이미 제출된 Flink Job을 항상 취소한다고 가정�
 - next URI와 redirect는 최초 BaseURL과 scheme/host/port가 같아야 한다.
 - response body는 `MaxResponseBytes+1`까지만 읽는다.
 - 오류 message는 첫 줄, 최대 512 bytes로 제한해 stack trace 전체 노출을 막는다.
-- Observer에는 query string/SQL/header가 없는 path와 timing만 보낸다.
+- Observer에는 query string/SQL/Script/Script URI/option map/header가 없는 path와 timing만 보낸다.
 - Session Setup 결과와 event에는 SQL이나 option map을 저장하지 않는다. 기본 및 caller 지정 민감 key를 탐지하고 Gateway 반사 오류는 관측 전에 `********`로 치환한다.
 - TLS 검증을 끄는 option은 제공하지 않는다. 필요한 custom Transport는 호출자가 명시적으로 주입한다.
 
@@ -154,6 +166,9 @@ Operation cancel이 이미 제출된 Flink Job을 항상 취소한다고 가정�
 - release version 파싱, profile 선택, API 교집합과 Stable/Highest/Explicit 정책
 - NewClient 무통신, Auto 감지 순서, 수동 mode와 감지 결과 cache
 - release별 capability 및 `executionTimeout` wire 포함/생략
+- Flink 2.3 v1~v4 exact endpoint matrix와 unknown API 보수적 비활성화
+- v3 refresh 및 v4 Script 배포 wire, URL escape, redaction, outcome-unknown과 비재시도
+- Flink 2.3 SQL 문법의 byte-preserving pass-through
 - SQL 제출 POST 무재시도, safe GET 재시도
 - Operation status/cancel/close
 - 실제 Flink serializer 형태와 네 RowKind
